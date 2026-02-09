@@ -1,0 +1,40 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  max_prompt_length: 1024
+  max_response_length: 1024
+  train_batch_size: 256
+  return_raw_chat: True
+
+actor_rollout_ref:
+  hybrid_engine: True
+  rollout:
+    name: sglang
+    multi_turn:
+      enable: True
+      max_assistant_turns: 5
+
+actor:
+  model:
+    path: /mnt/weka/aisg/model_training_team/model_garden/waiyi/gemma4b_rl/gemma_4b_otr_tl_teachershape_rloo_rescue_1_weight_0p8_32samples_baseline_funccall
+    # Your custom chat template will be loaded from the tokenizer
+
+algorithm:
+  agent_name: tool_agent  # Required for tool calling
+  tool_parser: hermes      # Matches your <tool_call> format
+
+reward_model:
+  style: rule  # Use rule-based reward function
+
+# Optional: Tool-specific configuration
+tools:
+  - name: weather-get_alerts
+    type: function
+  - name: weather-get_forecast
+    type: function

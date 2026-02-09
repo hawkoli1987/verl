@@ -21,27 +21,46 @@ def initialize_system_prompt(tokenizer, **apply_chat_template_kwargs) -> list[in
     Returns:
         List of token IDs for the system prompt, or empty list if not supported
     """
-    token1 = normalize_token_ids(
-        tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True)
-    )
-    token2 = normalize_token_ids(
-        tokenizer.apply_chat_template([{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True)
-    )
-    # get system prompt tokens
-    system_prompt = token1[: -(len(token2) - len(token1))]
-    return system_prompt
+    try:
+        token1 = normalize_token_ids(
+            tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True)
+        )
+        token2 = normalize_token_ids(
+            tokenizer.apply_chat_template([{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True)
+        )
+        system_prompt = token1[: -(len(token2) - len(token1))]
+        return system_prompt
+    except Exception as e:
+        # Some models (e.g., Gemma2, Gemma3) require strict role alternation and will fail with consecutive user messages
+        # For these models, the prefix is just the BOS token (no additional system prompt)
+        logger.warning(
+            f"Failed to extract system prompt using double user message method: {e}. "
+            "Returning BOS token as system prompt (model likely enforces role alternation)."
+        )
+        return [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
 
 
 def extract_system_prompt_and_generation(tokenizer):
-    token1 = normalize_token_ids(
-        tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True)
-    )
-    token2 = normalize_token_ids(
-        tokenizer.apply_chat_template([{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True)
-    )
-    # get system prompt tokens
-    system_prompt = token1[: -(len(token2) - len(token1))]
-    # get generate prompt tokens
+    try:
+        token1 = normalize_token_ids(
+            tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True)
+        )
+        token2 = normalize_token_ids(
+            tokenizer.apply_chat_template([{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True)
+        )
+        system_prompt = token1[: -(len(token2) - len(token1))]
+    except Exception as e:
+        # Some models (e.g., Gemma2, Gemma3) require strict role alternation and will fail with consecutive user messages
+        # For these models, the prefix is just the BOS token (no additional system prompt)
+        logger.warning(
+            f"Failed to extract system prompt using double user message method: {e}. "
+            "Returning BOS token as system prompt (model likely enforces role alternation)."
+        )
+        token1 = normalize_token_ids(
+            tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True)
+        )
+        system_prompt = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
+
     token3 = normalize_token_ids(
         tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=True, tokenize=True)
     )
