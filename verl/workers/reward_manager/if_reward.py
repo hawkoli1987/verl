@@ -1,6 +1,3 @@
-
-import json
-import os
 from collections import defaultdict
 
 import torch
@@ -19,11 +16,12 @@ class IFRewardManager:
         Initialize the IFRewardManager instance.
         """
         self.tokenizer = tokenizer  # Store the tokenizer for decoding token IDs
-        self.num_examine = num_examine  # the number of decoded responses to print per data_source
+        self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or default_compute_score
         self.reward_fn_key = reward_fn_key
-        self._eval_counter = 0
-        self._log_dir = os.environ.get("VERL_LOG_DIR", "")
+        print(f"NUM_EXAMINE: {self.num_examine}")
+        print(f"COMPUTE_SCORE: {self.compute_score}")
+        print(f"REWARD_FN_KEY: {self.reward_fn_key}")
 
     def __call__(self, data: DataProto, return_dict=False):
         if "rm_scores" in data.batch.keys():
@@ -31,7 +29,6 @@ class IFRewardManager:
                 return {"reward_tensor": data.batch["rm_scores"]}
             else:
                 return data.batch["rm_scores"]
-
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
 
@@ -72,15 +69,13 @@ class IFRewardManager:
             extra_infos.append(extra_info["response"])
             data_sources.append(data_source)
 
+        # print(f"Data: {data}")
         scores = self.compute_score(
             prompts=instructions,
             responses=responses,
             instruction_id_list=ground_truths,
             instruct_kwargs=extra_infos,
         )
-
-        # Collect examined samples for JSONL saving
-        examined_samples = []
 
         for i, score in enumerate(scores):
             data_item = data[i]
@@ -104,18 +99,6 @@ class IFRewardManager:
                         print(f"[{key}]", value)
                 else:
                     print("[score]", score)
-                # Save this examined sample for JSONL
-                examined_samples.append({
-                    "data_source": data_source,
-                    "prompt": instructions[i],
-                    "response": responses[i],
-                    "ground_truth": ground_truths[i],
-                    "score": float(score) if not isinstance(score, dict) else score,
-                })
-
-        # Save only the examined samples (1 per data_source) as JSONL
-        if examined_samples and self._log_dir:
-            self._save_eval_jsonl(examined_samples)
 
         if return_dict:
             return {
@@ -125,13 +108,4 @@ class IFRewardManager:
         else:
             return reward_tensor
 
-    def _save_eval_jsonl(self, samples):
-        """Append examined eval samples to a JSONL file in the log directory."""
-        self._eval_counter += 1
-        eval_dir = os.path.join(self._log_dir, "eval_generations")
-        os.makedirs(eval_dir, exist_ok=True)
-        filepath = os.path.join(eval_dir, f"eval_{self._eval_counter:04d}.jsonl")
-        with open(filepath, "w") as f:
-            for record in samples:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        print(f"[eval_jsonl] Saved {len(samples)} sample(s) to {filepath}")
+        # return scores  # Placeholder for actual scores
