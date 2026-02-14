@@ -622,6 +622,7 @@ class RayPPOTrainer:
 
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info["validate"] = True
+            test_batch.meta_info["global_steps"] = self.global_steps
 
             # Store original inputs
             input_ids = test_batch.batch["prompts"]
