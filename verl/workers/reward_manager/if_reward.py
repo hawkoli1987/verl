@@ -1,3 +1,5 @@
+import json
+import os
 from collections import defaultdict
 
 import torch
@@ -19,9 +21,6 @@ class IFRewardManager:
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or default_compute_score
         self.reward_fn_key = reward_fn_key
-        print(f"NUM_EXAMINE: {self.num_examine}")
-        print(f"COMPUTE_SCORE: {self.compute_score}")
-        print(f"REWARD_FN_KEY: {self.reward_fn_key}")
 
     def __call__(self, data: DataProto, return_dict=False):
         if "rm_scores" in data.batch.keys():
@@ -69,7 +68,6 @@ class IFRewardManager:
             extra_infos.append(extra_info["response"])
             data_sources.append(data_source)
 
-        # print(f"Data: {data}")
         scores = self.compute_score(
             prompts=instructions,
             responses=responses,
@@ -93,12 +91,29 @@ class IFRewardManager:
                 already_print_data_sources[data_source] += 1
                 print("[prompt]", instructions[i])
                 print("[response]", responses[i])
-                print("[ground_truth]", ground_truths[i])
-                if isinstance(score, dict):
-                    for key, value in score.items():
-                        print(f"[{key}]", value)
-                else:
-                    print("[score]", score)
+                print("[score]", score)
+
+        # Save ALL validation samples to JSONL if VERL_LOG_DIR is set
+        is_validate = data.meta_info.get("validate", False) if hasattr(data, "meta_info") else False
+        if is_validate:
+            log_dir = os.environ.get("VERL_LOG_DIR", "")
+            global_steps = data.meta_info.get("global_steps", 0) if hasattr(data, "meta_info") else 0
+            if log_dir:
+                eval_dir = os.path.join(log_dir, "eval_generations")
+                os.makedirs(eval_dir, exist_ok=True)
+                jsonl_path = os.path.join(eval_dir, f"eval_{global_steps:04d}.jsonl")
+                # Append all samples from this eval batch (file may be written to
+                # by multiple reward-manager shards, so use append mode)
+                with open(jsonl_path, "a") as f:
+                    for idx in range(len(instructions)):
+                        sample = {
+                            "step": global_steps,
+                            "prompt": instructions[idx],
+                            "response": responses[idx],
+                            "score": float(scores[idx]) if not isinstance(scores[idx], dict) else scores[idx],
+                        }
+                        f.write(json.dumps(sample) + "\n")
+                print(f"[eval_gen] Saved {len(instructions)} validation samples to {jsonl_path}")
 
         if return_dict:
             return {
@@ -107,5 +122,3 @@ class IFRewardManager:
             }
         else:
             return reward_tensor
-
-        # return scores  # Placeholder for actual scores
