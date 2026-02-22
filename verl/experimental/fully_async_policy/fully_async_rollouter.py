@@ -591,7 +591,11 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
             rollout_sample.full_batch, rollout_sample.agent_loop_output_list
         )
         if not is_cancel:
+            original_ntb = rollout_sample.full_batch.non_tensor_batch
             rollout_sample.full_batch = ret
+            for k, v in original_ntb.items():
+                if k not in rollout_sample.full_batch.non_tensor_batch:
+                    rollout_sample.full_batch.non_tensor_batch[k] = v
             rollout_sample.full_batch.non_tensor_batch["uid"] = np.array(
                 [f"uid_{rollout_sample.sample_id}"] * len(rollout_sample.full_batch), dtype=object
             )
