@@ -1,6 +1,8 @@
+import os
 import re
 import uuid
 from typing import Dict, Any, List
+from multiprocessing import get_context
 
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
@@ -11,10 +13,22 @@ MAX_RETRIES = 3
 BASE_DELAY = 10
 MAX_WORKERS = 16
 TIMEOUT = 600
+REWARD_PARALLEL_WORKERS = int(os.environ.get("REWARD_PARALLEL_WORKERS", "0"))
 
 load_dotenv()
 
 run_id = str(uuid.uuid4())
+
+
+def _evaluate_single(args):
+    """Worker function for multiprocessing -- must be top-level and picklable."""
+    inp, response_dict = args
+    try:
+        output = test_instruction_following_strict(inp, response_dict)
+        return output.follow_all_instructions
+    except Exception as e:
+        print(f"Error evaluating input {inp.key}: {e}", flush=True)
+        return 0.0
 
 
 def _escape_regex_in_list(words):
@@ -33,18 +47,6 @@ def get_reward_score_batch(
     instruct_kwargs: list = None,
     **kwargs  # Accept additional keyword arguments passed by reward manager
 ) -> list[float]:
-    # Uncomment below for debugging
-    # import sys
-    # print(f"=== get_reward_score_batch CALLED ===", flush=True)
-    # print(f"NUMBER OF PROMPTS: {len(prompts)}", flush=True)
-    # print(f"NUMBER OF RESPONSES: {len(responses)}", flush=True)
-    # print(f"NUMBER OF INSTRUCTION ID LIST: {len(instruction_id_list)}", flush=True)
-    # print(f"INSTRUCT_KWARGS TYPE: {type(instruct_kwargs)}", flush=True)
-    # if instruct_kwargs:
-    #     print(f"NUMBER OF INSTRUCT KWARGS: {len(instruct_kwargs)}", flush=True)
-    #     print(f"FIRST INSTRUCT_KWARGS ITEM TYPE: {type(instruct_kwargs[0])}", flush=True)
-    #     print(f"FIRST INSTRUCT_KWARGS ITEM REPR: {repr(instruct_kwargs[0])[:200]}", flush=True)
-    # sys.stdout.flush()
     try:
         response_dict = {}
         for prompt, response in zip(prompts, responses):
@@ -117,10 +119,6 @@ def get_reward_score_batch(
                 print(f"Error processing instruct_kwargs[{i}]: {e}, value: {out_val}, type: {type(out_val)}")
                 raise
 
-        # Uncomment below for detailed debugging
-        # print(f"Sample converted kwargs (first item): {out_kw[0] if out_kw else 'empty'}", flush=True)
-        # print(f"Creating {len(prompts)} InputExample objects...", flush=True)
-
         inputs = []
         for i, (prompt, inst_id, kws) in enumerate(zip(prompts, instruction_id_list, out_kw)):
             try:
@@ -133,23 +131,32 @@ def get_reward_score_batch(
                 print(f"  kws: {kws}", flush=True)
                 raise
 
-        # print(f"Evaluating {len(inputs)} inputs...", flush=True)
-        all_outputs = []
-        for idx, inp in enumerate(inputs):
-            try:
-                output = test_instruction_following_strict(inp, response_dict)
-                all_outputs.append(output.follow_all_instructions)
-            except Exception as e:
-                print(f"Error evaluating input {idx}: {e}", flush=True)
-                print(f"  instruction_id_list: {inp.instruction_id_list}", flush=True)
-                print(f"  kwargs: {inp.kwargs}", flush=True)
-                raise
+        # --- Evaluate: parallel or sequential ---
+        if REWARD_PARALLEL_WORKERS > 0:
+            import time as _time
+            _t0 = _time.time()
+            ctx = get_context("fork")  # fork inherits sys.modules so pickle can find dynamically-loaded modules
+            with ctx.Pool(processes=REWARD_PARALLEL_WORKERS) as pool:
+                all_outputs = pool.map(_evaluate_single, [(inp, response_dict) for inp in inputs])
+            _elapsed = _time.time() - _t0
+            print(f"[reward_if] Parallel eval ({REWARD_PARALLEL_WORKERS} workers): "
+                  f"{len(inputs)} samples in {_elapsed:.2f}s "
+                  f"({_elapsed/len(inputs)*1000:.1f} ms/sample)", flush=True)
+        else:
+            all_outputs = []
+            for idx, inp in enumerate(inputs):
+                try:
+                    output = test_instruction_following_strict(inp, response_dict)
+                    all_outputs.append(output.follow_all_instructions)
+                except Exception as e:
+                    print(f"Error evaluating input {idx}: {e}", flush=True)
+                    print(f"  instruction_id_list: {inp.instruction_id_list}", flush=True)
+                    print(f"  kwargs: {inp.kwargs}", flush=True)
+                    raise
     except Exception as e:
         import traceback
         print(f"Error in get_reward_score_batch: {e}", flush=True)
         traceback.print_exc()
         all_outputs = [0.0] * len(prompts)
 
-    # Uncomment below to see reward distribution
-    # print(f"Reward summary: {sum(all_outputs)}/{len(all_outputs)} passed ({100*sum(all_outputs)/len(all_outputs):.1f}%)", flush=True)
     return all_outputs
