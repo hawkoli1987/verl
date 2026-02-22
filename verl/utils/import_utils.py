@@ -126,9 +126,13 @@ def load_module(module_path: str, module_name: Optional[str] = None) -> object:
         except Exception as e:
             raise RuntimeError(f"Error loading module from {module_path=}") from e
 
-        if module_name is not None:
-            import sys
+        # Always register in sys.modules so pickle can serialize functions
+        # from this module (needed for multiprocessing with fork context).
+        import sys
+        if spec_name not in sys.modules:
+            sys.modules[spec_name] = module
 
+        if module_name is not None:
             # Avoid overwriting an existing module with a different object.
             if module_name in sys.modules and sys.modules[module_name] is not module:
                 raise RuntimeError(
