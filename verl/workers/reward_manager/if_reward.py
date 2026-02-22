@@ -65,7 +65,7 @@ class IFRewardManager:
             instructions.append(prompt_str)
             responses.append(response_str)
             ground_truths.append(ground_truth)
-            extra_infos.append(extra_info["response"])
+            extra_infos.append(extra_info.get("response", {}))
             data_sources.append(data_source)
 
         scores = self.compute_score(
