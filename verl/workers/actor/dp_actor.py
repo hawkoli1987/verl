@@ -124,6 +124,7 @@ class DataParallelPPOActor(BasePPOActor):
         """
         calculate_sum_pi_squared = self.config.get("calculate_sum_pi_squared", False)
         sum_pi_squared_checkpointing = self.config.get("sum_pi_squared_checkpointing", False)
+        _response_logits = None  # populated in non-rmpad non-fused path when KD is enabled
         # PrefixGrouper path for shared-prefix optimization
         if self.use_prefix_grouper:
             can_use_pg = (
@@ -365,6 +366,13 @@ class DataParallelPPOActor(BasePPOActor):
                 else:
                     logits = output.logits
 
+                    # Save raw response logits for KD before temperature scaling.
+                    # Only in the non-rmpad path; guarded by the enable flag to avoid memory cost.
+                    _kd_enabled = self.config.onpolicy_kd.enable
+                    _response_logits = None
+                    if _kd_enabled:
+                        _response_logits = logits[:, -response_length - 1 : -1, :].clone()
+
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
                     log_probs = logprobs_from_logits(logits, micro_batch["responses"])
@@ -386,6 +394,8 @@ class DataParallelPPOActor(BasePPOActor):
                 outputs["entropys"] = entropy
             if calculate_sum_pi_squared:
                 outputs["sum_pi_squared"] = sum_pi_squared
+            if _response_logits is not None:
+                outputs["response_logits"] = _response_logits
             return outputs
 
     def _optimizer_step(self):
@@ -526,6 +536,11 @@ class DataParallelPPOActor(BasePPOActor):
         # Include rollout_log_probs for computing rollout_corr metrics in bypass mode
         if "rollout_log_probs" in data.batch.keys():
             select_keys.append("rollout_log_probs")
+        # Include onpolicy KD tensors if present in batch.
+        if self.config.onpolicy_kd.enable:
+            for _kd_key in ("teacher_topk_token_ids", "teacher_topk_logprobs", "onpolicy_kd_loss"):
+                if _kd_key in data.batch.keys():
+                    select_keys.append(_kd_key)
 
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = []
@@ -648,6 +663,47 @@ class DataParallelPPOActor(BasePPOActor):
                         policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                         metrics["actor/kl_loss"] += kl_loss.detach().item() * loss_scale_factor
                         micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
+
+                    # add onpolicy KD term
+                    if self.config.onpolicy_kd.enable:
+                        kd_cfg = self.config.onpolicy_kd
+                        response_logits_for_kd = outputs.get("response_logits", None)
+                        teacher_topk_ids = model_inputs.get("teacher_topk_token_ids", None)
+                        teacher_topk_lps = model_inputs.get("teacher_topk_logprobs", None)
+                        # also support legacy pre-computed kd loss tensor
+                        onpolicy_kd_loss_precomp = model_inputs.get("onpolicy_kd_loss", None)
+
+                        if response_logits_for_kd is not None and teacher_topk_ids is not None and teacher_topk_lps is not None:
+                            # Compute per-token forward KL(teacher || student) on teacher top-K support
+                            kd_logits = response_logits_for_kd.float() / max(float(kd_cfg.temperature), 1e-6)
+                            student_topk_logits = torch.gather(kd_logits, dim=-1, index=teacher_topk_ids)
+                            student_topk_lps = torch.log_softmax(student_topk_logits, dim=-1)
+                            teacher_topk_renorm = teacher_topk_lps - torch.logsumexp(teacher_topk_lps, dim=-1, keepdim=True)
+                            teacher_probs = torch.exp(teacher_topk_renorm)
+                            token_kd = torch.sum(teacher_probs * (teacher_topk_renorm - student_topk_lps), dim=-1)
+                            kd_loss = agg_loss(loss_mat=token_kd, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                        elif onpolicy_kd_loss_precomp is not None:
+                            kd_loss = agg_loss(
+                                loss_mat=onpolicy_kd_loss_precomp,
+                                loss_mask=response_mask,
+                                loss_agg_mode=loss_agg_mode,
+                            )
+                        else:
+                            kd_loss = None
+
+                        if kd_loss is not None:
+                            kd_coef = float(kd_cfg.lambda_kd)
+                            global_steps = data.meta_info.get("global_steps", None)
+                            total_steps = data.meta_info.get("total_training_steps", None)
+                            if global_steps is not None and total_steps is not None and kd_cfg.warmup_ratio > 0:
+                                warmup_steps = max(int(total_steps * kd_cfg.warmup_ratio), 1)
+                                kd_coef = kd_coef * min(float(global_steps) / warmup_steps, 1.0)
+                            policy_loss = policy_loss + kd_coef * kd_loss
+                            micro_batch_metrics["actor/onpolicy_kd_loss"] = kd_loss.detach().item()
+                            micro_batch_metrics["actor/onpolicy_kd_coef"] = kd_coef
+                            micro_batch_metrics["actor/onpolicy_kd_skipped"] = 0.0
+                        else:
+                            micro_batch_metrics["actor/onpolicy_kd_skipped"] = 1.0
 
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz
