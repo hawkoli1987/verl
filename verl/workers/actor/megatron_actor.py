@@ -378,6 +378,11 @@ class MegatronPPOActor(BasePPOActor):
         # Include rollout_log_probs for computing rollout_corr metrics in bypass mode
         if "rollout_log_probs" in data.batch.keys():
             select_keys.append("rollout_log_probs")
+        # Include onpolicy KD tensors if present in batch.
+        if self.config.onpolicy_kd.enable:
+            for _kd_key in ("teacher_topk_token_ids", "teacher_topk_logprobs", "onpolicy_kd_loss"):
+                if _kd_key in data.batch.keys():
+                    select_keys.append(_kd_key)
         self.has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         # router replay
         if self.enable_routing_replay:
@@ -567,6 +572,29 @@ class MegatronPPOActor(BasePPOActor):
                     metrics["actor/kl_loss"] = kl_loss.detach().item()
                     metrics["actor/kl_coef"] = self.config.kl_loss_coef
 
+                # add onpolicy KD term if pre-computed in batch
+                if self.config.onpolicy_kd.enable:
+                    kd_cfg = self.config.onpolicy_kd
+                    onpolicy_kd_loss = data.get("onpolicy_kd_loss", None)
+                    if onpolicy_kd_loss is not None:
+                        kd_loss = agg_loss(
+                            loss_mat=onpolicy_kd_loss,
+                            loss_mask=response_mask,
+                            loss_agg_mode=self.config.loss_agg_mode,
+                        )
+                        kd_coef = float(kd_cfg.lambda_kd)
+                        _global_steps = meta_info.get("global_steps", None) if meta_info else None
+                        _total_steps = meta_info.get("total_training_steps", None) if meta_info else None
+                        if _global_steps is not None and _total_steps is not None and kd_cfg.warmup_ratio > 0:
+                            warmup_steps = max(int(_total_steps * kd_cfg.warmup_ratio), 1)
+                            kd_coef = kd_coef * min(float(_global_steps) / warmup_steps, 1.0)
+                        policy_loss = policy_loss + kd_coef * kd_loss
+                        metrics["actor/onpolicy_kd_loss"] = kd_loss.detach().item()
+                        metrics["actor/onpolicy_kd_coef"] = kd_coef
+                        metrics["actor/onpolicy_kd_skipped"] = 0.0
+                    else:
+                        metrics["actor/onpolicy_kd_skipped"] = 1.0
+
                 # return loss and stats
 
             append_to_dict(metrics, stats)
@@ -692,6 +720,8 @@ class MegatronPPOActor(BasePPOActor):
                     "clip_ratio": self.config.clip_ratio,
                     "entropy_coeff": self.config.entropy_coeff,
                     "clip_ratio_c": clip_ratio_c,
+                    "global_steps": data.meta_info.get("global_steps", None),
+                    "total_training_steps": data.meta_info.get("total_training_steps", None),
                 }
 
             if RouterReplayHelper.is_r2_record_action(self.tf_config, vp_rank):

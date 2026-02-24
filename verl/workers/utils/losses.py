@@ -14,6 +14,7 @@
 
 
 import torch
+import torch.nn.functional as F
 from tensordict import TensorDict
 
 from verl.trainer.ppo.core_algos import agg_loss, compute_value_loss, get_policy_loss_fn, kl_penalty
@@ -52,6 +53,110 @@ def sft_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         loss = -masked_sum(log_prob, response_mask) / batch_num_tokens * dp_size
 
     return loss, {}
+
+
+def _slice_response_from_unpad_output(tensor: torch.Tensor, data: TensorDict) -> torch.Tensor:
+    """Slice response from unpad model output.
+
+    Args:
+        tensor: model output tensor of shape [bsz, 1]
+        data: TensorDict with "prompt_ids", "response_ids", "attention_mask"
+
+    Returns:
+        tensor: sliced response tensor of shape [bsz, max_response_len]
+    """
+    values = tensor.values() if tensor.is_nested else tensor
+    prompt_ids = data["prompts"]
+    response_ids = data["responses"]
+    attention_mask = data["attention_mask"]
+
+    if prompt_ids.is_nested:
+        prompt_lens = prompt_ids.offsets().diff()
+        response_lens = response_ids.offsets().diff()
+        max_response_len = response_ids.offsets().max().item()
+    else:
+        assert not attention_mask.is_nested
+        prompt_lens = attention_mask[:, : prompt_ids.shape[1]].sum(dim=1)
+        response_lens = attention_mask[:, prompt_ids.shape[1] :].sum(dim=1)
+        max_response_len = response_ids.shape[1]
+
+    sequence_lens = prompt_lens + response_lens
+    sequence_offsets = sequence_lens.cumsum(dim=0)
+    assert sequence_offsets[-1].item() == values.shape[0]
+
+    response_list = []
+    for resp_len, seq_offset in zip(response_lens, sequence_offsets, strict=True):
+        pad_size = max_response_len - resp_len
+        # left-shift model output by one token for log_probs/values
+        response_list.append(F.pad(values[seq_offset - resp_len - 1 : seq_offset - 1], (0, pad_size)))
+
+    output = torch.stack(response_list, dim=0)
+    return output
+
+
+def _compute_onpolicy_kd_loss(config: ActorConfig, model_output, data: TensorDict, response_mask: torch.Tensor):
+    """Compute onpolicyKD_RL loss: forward KL(teacher || student) on teacher top-k support.
+
+    Expected tensors:
+      - model_output["response_logits"]: [B, T, V]
+      - data["teacher_topk_token_ids"]: [B, T, K]
+      - data["teacher_topk_logprobs"]: [B, T, K]
+    """
+
+    kd_cfg = config.onpolicy_kd
+    if not kd_cfg.enable:
+        return None, {}
+
+    required = (
+        "response_logits" in model_output
+        and "teacher_topk_token_ids" in data
+        and "teacher_topk_logprobs" in data
+    )
+    if not required:
+        # fail-open: skip KD when upstream teacher scoring is unavailable
+        if kd_cfg.fail_open:
+            return None, {"actor/onpolicy_kd_skipped": 1.0}
+        raise ValueError(
+            "onpolicy_kd is enabled but required tensors are missing: "
+            "response_logits / teacher_topk_token_ids / teacher_topk_logprobs"
+        )
+
+    logits = model_output["response_logits"].float() / max(kd_cfg.temperature, 1e-6)
+    teacher_topk_ids = data["teacher_topk_token_ids"].long()
+    teacher_topk_logprobs = data["teacher_topk_logprobs"].float()
+
+    # [B, T, K]: student logits on teacher's truncated support
+    student_topk_logits = torch.gather(logits, dim=-1, index=teacher_topk_ids)
+    student_topk_logprobs = torch.log_softmax(student_topk_logits, dim=-1)
+
+    # Renormalize teacher over top-k support only (v1 behavior)
+    teacher_topk_logprobs = teacher_topk_logprobs - torch.logsumexp(teacher_topk_logprobs, dim=-1, keepdim=True)
+    teacher_topk_probs = torch.exp(teacher_topk_logprobs)
+
+    # Forward KL(teacher || student) on truncated support
+    token_kd = torch.sum(teacher_topk_probs * (teacher_topk_logprobs - student_topk_logprobs), dim=-1)
+
+    kd_loss = agg_loss(
+        loss_mat=token_kd,
+        loss_mask=response_mask,
+        loss_agg_mode=config.loss_agg_mode,
+        **config.global_batch_info,
+    )
+
+    global_steps = data.get("global_steps", None)
+    total_training_steps = data.get("total_training_steps", None)
+    kd_coef = kd_cfg.lambda_kd
+    if global_steps is not None and total_training_steps is not None and kd_cfg.warmup_ratio > 0:
+        warmup_steps = max(int(total_training_steps * kd_cfg.warmup_ratio), 1)
+        warm = min(float(global_steps) / warmup_steps, 1.0)
+        kd_coef = kd_coef * warm
+
+    metrics = {
+        "actor/onpolicy_kd_loss": kd_loss.detach().item(),
+        "actor/onpolicy_kd_coef": float(kd_coef),
+        "actor/onpolicy_kd_skipped": 0.0,
+    }
+    return kd_loss * kd_coef, metrics
 
 
 def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None):
@@ -132,6 +237,17 @@ def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None)
         policy_loss += kl_loss * config.kl_loss_coef
         metrics["kl_loss"] = Metric(value=kl_loss, aggregation=metric_aggregation)
         metrics["kl_coef"] = config.kl_loss_coef
+
+    # add onpolicy KD loss (teacher || student on teacher top-k)
+    kd_term, kd_metrics = _compute_onpolicy_kd_loss(
+        config=config,
+        model_output=model_output,
+        data=data,
+        response_mask=response_mask,
+    )
+    if kd_term is not None:
+        policy_loss += kd_term
+    metrics.update(kd_metrics)
 
     return policy_loss, metrics
 

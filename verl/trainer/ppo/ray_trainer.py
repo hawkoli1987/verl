@@ -59,6 +59,7 @@ from verl.trainer.ppo.utils import (
     need_reward_model,
     need_teacher_policy,
 )
+from verl.trainer.ppo.onpolicy_kd import score_sequences
 from verl.utils import tensordict_utils as tu
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
@@ -1201,6 +1202,54 @@ class RayPPOTrainer:
             old_log_prob_mfu = 0
         return old_log_prob, old_log_prob_mfu
 
+    def _attach_onpolicy_kd_loss(self, batch: DataProto, global_steps: int) -> DataProto:
+        """Call the teacher endpoint and attach top-K logprob tensors to *batch*.
+
+        On failure, logs a warning and returns *batch* unchanged (fail-open).
+        """
+        import logging
+
+        kd_cfg = self.config.actor_rollout_ref.actor.onpolicy_kd
+        if not kd_cfg.enable:
+            return batch
+
+        try:
+            input_ids = batch.batch["input_ids"]  # [B, seq_len]
+            responses = batch.batch["responses"]  # [B, resp_len]
+            response_length = responses.shape[1]
+
+            sequences = [
+                self.tokenizer.decode(ids.tolist(), skip_special_tokens=False)
+                for ids in input_ids
+            ]
+
+            topk_ids, topk_lps, valid_mask = score_sequences(
+                base_url=kd_cfg.teacher_base_url,
+                model=kd_cfg.teacher_model,
+                tokenizer=self.tokenizer,
+                sequences=sequences,
+                response_length=response_length,
+                topk=kd_cfg.topk,
+                temperature=kd_cfg.temperature,
+                timeout_s=kd_cfg.timeout_ms / 1000.0,
+                max_retries=kd_cfg.max_retries,
+            )
+
+            batch.batch["teacher_topk_token_ids"] = topk_ids  # [B, T, K]
+            batch.batch["teacher_topk_logprobs"] = topk_lps   # [B, T, K]
+            batch.meta_info["global_steps"] = global_steps
+            batch.meta_info["total_training_steps"] = self.total_training_steps
+
+        except Exception as exc:  # noqa: BLE001
+            if kd_cfg.fail_open:
+                logging.getLogger(__name__).warning(
+                    "onpolicy_kd: teacher scoring failed, skipping KD this step. Error: %s", exc
+                )
+            else:
+                raise
+
+        return batch
+
     def _update_actor(self, batch: DataProto) -> DataProto:
         rollout_config = self.config.actor_rollout_ref.rollout
         batch.meta_info["multi_turn"] = rollout_config.multi_turn.enable
@@ -1549,6 +1598,9 @@ class RayPPOTrainer:
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
+                        # attach teacher KD tensors before actor update
+                        if self.config.actor_rollout_ref.actor.onpolicy_kd.enable:
+                            batch = self._attach_onpolicy_kd_loss(batch, self.global_steps)
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             actor_output = self._update_actor(batch)
