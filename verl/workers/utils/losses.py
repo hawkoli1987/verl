@@ -129,16 +129,28 @@ def _compute_onpolicy_kd_loss(config: ActorConfig, model_output, data: TensorDic
     student_topk_logits = torch.gather(logits, dim=-1, index=teacher_topk_ids)
     student_topk_logprobs = torch.log_softmax(student_topk_logits, dim=-1)
 
-    # Renormalize teacher over top-k support only (v1 behavior)
-    teacher_topk_logprobs = teacher_topk_logprobs - torch.logsumexp(teacher_topk_logprobs, dim=-1, keepdim=True)
+    # Renormalize teacher over top-k support only (v1 behavior).
+    # Guard against positions with no teacher data (all logprobs == -inf) to avoid NaN.
+    teacher_has_data = teacher_topk_logprobs.isfinite().any(dim=-1)  # [B, T]
+    safe_lps = teacher_topk_logprobs.clone()
+    # 1. zero out fully-invalid positions (all K -inf) to avoid -inf logsumexp
+    safe_lps[~teacher_has_data] = 0.0
+    # 2. replace individual -inf entries (token not in teacher top-K) so they get ~0 probability
+    safe_lps = safe_lps.nan_to_num(nan=0.0, posinf=0.0, neginf=-100.0)
+    teacher_topk_logprobs = safe_lps - torch.logsumexp(safe_lps, dim=-1, keepdim=True)
     teacher_topk_probs = torch.exp(teacher_topk_logprobs)
 
     # Forward KL(teacher || student) on truncated support
-    token_kd = torch.sum(teacher_topk_probs * (teacher_topk_logprobs - student_topk_logprobs), dim=-1)
+    # nan_to_num: zero-prob teacher entries give 0 * (-inf) = NaN, which should be 0
+    kl_per_entry = teacher_topk_probs * (teacher_topk_logprobs - student_topk_logprobs)
+    kl_per_entry = kl_per_entry.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+    token_kd = kl_per_entry.sum(dim=-1)
 
+    # Exclude positions with no teacher data from the loss
+    effective_mask = response_mask * teacher_has_data.float()
     kd_loss = agg_loss(
         loss_mat=token_kd,
-        loss_mask=response_mask,
+        loss_mask=effective_mask,
         loss_agg_mode=config.loss_agg_mode,
         **config.global_batch_info,
     )

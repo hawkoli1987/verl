@@ -1214,34 +1214,60 @@ class RayPPOTrainer:
             return batch
 
         try:
-            input_ids = batch.batch["input_ids"]  # [B, seq_len]
-            responses = batch.batch["responses"]  # [B, resp_len]
-            response_length = responses.shape[1]
+            input_ids = batch.batch["input_ids"]         # [B, seq_len]
+            attention_mask = batch.batch["attention_mask"]  # [B, seq_len]
+            response_mask = batch.batch["response_mask"]    # [B, resp_len]
 
-            sequences = [
-                self.tokenizer.decode(ids.tolist(), skip_special_tokens=False)
-                for ids in input_ids
-            ]
+            # Decode only the non-padding tokens for each sequence so that
+            # the teacher does not see PAD tokens (which would make the vLLM
+            # endpoint stop early at the first EOS/PAD and return almost no
+            # logprobs).
+            sequences = []
+            actual_response_lengths = []
+            for b in range(input_ids.shape[0]):
+                actual_ids = input_ids[b][attention_mask[b].bool()]
+                sequences.append(
+                    self.tokenizer.decode(actual_ids.tolist(), skip_special_tokens=False)
+                )
+                actual_response_lengths.append(int(response_mask[b].sum().item()))
 
             topk_ids, topk_lps, valid_mask = score_sequences(
                 base_url=kd_cfg.teacher_base_url,
                 model=kd_cfg.teacher_model,
                 tokenizer=self.tokenizer,
                 sequences=sequences,
-                response_length=response_length,
+                response_length=actual_response_lengths,
                 topk=kd_cfg.topk,
                 temperature=kd_cfg.temperature,
                 timeout_s=kd_cfg.timeout_ms / 1000.0,
                 max_retries=kd_cfg.max_retries,
             )
 
-            batch.batch["teacher_topk_token_ids"] = topk_ids  # [B, T, K]
-            batch.batch["teacher_topk_logprobs"] = topk_lps   # [B, T, K]
+            # Pad teacher tensors to the full padded response length so the
+            # shapes match response_logits_for_kd in the actor.
+            max_padded_T = response_mask.shape[1]
+            actual_T = topk_ids.shape[1]
+            if actual_T < max_padded_T:
+                pad_n = max_padded_T - actual_T
+                K = topk_ids.shape[2]
+                pad_ids = torch.zeros((topk_ids.shape[0], pad_n, K), dtype=torch.long)
+                pad_lps = torch.full((topk_lps.shape[0], pad_n, K), float("-inf"))
+                topk_ids = torch.cat([topk_ids, pad_ids], dim=1)
+                topk_lps = torch.cat([topk_lps, pad_lps], dim=1)
+
+            batch.batch["teacher_topk_token_ids"] = topk_ids  # [B, max_padded_T, K]
+            batch.batch["teacher_topk_logprobs"] = topk_lps   # [B, max_padded_T, K]
             batch.meta_info["global_steps"] = global_steps
             batch.meta_info["total_training_steps"] = self.total_training_steps
 
         except Exception as exc:  # noqa: BLE001
             if kd_cfg.fail_open:
+                import traceback as _tb
+                print(
+                    f"[onpolicy_kd] teacher scoring FAILED this step, KD skipped. "
+                    f"Error: {exc}\n{_tb.format_exc()}",
+                    flush=True,
+                )
                 logging.getLogger(__name__).warning(
                     "onpolicy_kd: teacher scoring failed, skipping KD this step. Error: %s", exc
                 )

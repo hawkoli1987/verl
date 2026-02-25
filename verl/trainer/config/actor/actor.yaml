@@ -75,6 +75,42 @@ policy_loss:
   # KL divergence penalty coefficient
   ppo_kl_coef: 0.1
 
+# OnPolicy KD (knowledge distillation) config
+onpolicy_kd:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.OnPolicyKDConfig
+
+  # Whether to enable onpolicy KD teacher scoring
+  enable: false
+
+  # Teacher vLLM endpoint base URL (e.g. https://host/v1)
+  teacher_base_url: null
+
+  # Teacher model name forwarded in completions payload
+  teacher_model: null
+
+  # Number of top tokens to request per position
+  topk: 64
+
+  # Softmax temperature forwarded to teacher
+  temperature: 1.0
+
+  # KD loss coefficient (lambda_kd)
+  lambda_kd: 0.0
+
+  # Warmup ratio: ramp lambda_kd from 0 to lambda_kd over this fraction of total steps
+  warmup_ratio: 0.1
+
+  # Whether to silently skip KD when teacher scoring fails
+  fail_open: true
+
+  # Per-request HTTP timeout in milliseconds
+  timeout_ms: 30000
+
+  # Number of additional retry attempts after first failure
+  max_retries: 2
+
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
 clip_ratio_c: 3.0
 

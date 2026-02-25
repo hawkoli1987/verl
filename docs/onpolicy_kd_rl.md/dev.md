@@ -54,3 +54,66 @@ Do you understand my intention? Feel free to clarify with me on all details of t
 **`tests/onpolicy_kd/test_teacher_client.py`** — Thirteen unit tests that cover the teacher HTTP client using mocks. Payload tests confirm that `build_teacher_payload` sets `echo=True`, `max_tokens=0`, the correct `logprobs` count, and a default temperature of 1.0. Token ID mapping tests confirm that `_token_str_to_id` returns the correct ID for a known token, falls back to `encode()` for an unknown token, and returns 0 when the encode fallback is also empty. Response parsing tests confirm that `extract_topk_tensors_from_openai_response` returns tensors of the right shape, that it takes only the last `response_length` positions when the echo response has more tokens than the response region, that rows without teacher data are filled with zeros and negative-infinity logprobs, and that an empty choices list produces all-zero, all-minus-infinity tensors. Retry and batch tests confirm that `score_sequences` retries on connection failure and succeeds on the third attempt, returns a False valid-mask entry with zeroed tensors when all retries are exhausted, returns the correct `[B, T, K]` shapes for a batch, and constructs the URL as `{base_url}/completions` rather than `{base_url}/v1/completions`.
 
 **`tests/onpolicy_kd/test_integration.py`** — Four tests that hit the real teacher endpoint and are automatically skipped when the `TEACHER_URL` environment variable is not set. The first checks that the returned tensors have the expected `[B, T, K]` shapes. The second checks that all finite logprob values are at most zero. The third builds a random student and verifies that the computed KD loss is positive. The fourth checks that `valid_mask` is all-True for sequences the endpoint handles successfully; if the endpoint fails it skips rather than fails, so CI is never blocked.
+
+---
+
+## Status Report — 2026-02-25
+
+### What Currently Works
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `OnPolicyKDConfig` (config/actor.py) | ✅ | All 10 fields; YAML in sync |
+| Teacher HTTP client (onpolicy_kd.py) | ✅ | score_sequences, per-seq lengths, retry |
+| `_attach_onpolicy_kd_loss` in trainer | ✅ | Decodes non-padding tokens; pads tensors to max_padded_T |
+| Teacher topk tensors arriving in actor | ✅ | Confirmed `valid=8/8 finite=81826/81920` in logs |
+| `response_logits_for_kd` capture | ✅ | Non-fused, non-rmpad path; `use_remove_padding=false` required |
+| Warmup schedule | ✅ | Linear 0→lambda_kd over warmup_ratio×total_steps |
+| Launch script `launch_grpo_colocate_kd.sh` | ✅ | topk=20 ≤ teacher server max_logprobs=20 |
+| Debug prints | ✅ Removed | Code is clean |
+| nan_to_num fix (per-entry -inf → NaN) | ✅ In code | dp_actor.py:687,692; losses.py:139,146 |
+| GRPO policy loss | ✅ | Unaffected by KD plumbing |
+
+### Bug History (all four fixed)
+
+| # | Symptom | Root Cause | Fix |
+|---|---------|-----------|-----|
+| 1 | `onpolicy_kd_skipped:1.0` | `use_remove_padding=True` → logits never captured | Set `use_remove_padding=false` |
+| 2 | `valid_mask=[False]*8` | Padded `input_ids` sent to teacher; EOS/PAD → vLLM stops early | Decode via `attention_mask` only |
+| 3 | HTTP 400 Bad Request | `topk=32 > max_logprobs=20` on teacher server | Changed `topk=32 → topk=20` |
+| 4 | `onpolicy_kd_loss:nan` | Per-entry -inf in teacher logprobs → `0 * (-inf) = NaN` in KL sum | nan_to_num: replace -inf with -100.0 before logsumexp; zero NaN/inf per-entry KL |
+
+### Why NaN Appeared in Last Training Log
+
+The nan_to_num fix is present in current source (`dp_actor.py` lines 686–692). The last run
+(`grpo_kd_0p6b_20260224_130922`) predates the fix — Python modules are cached at import time.
+A fresh relaunch is required.
+
+### Remaining Potential Issues
+
+**Issue A — Student logits overflow to inf (LOW RISK)**
+
+`log_softmax` over K gathered logits can produce NaN if any logit overflows BF16 (>65504 → inf).
+Fix applied (2026-02-25): clamp logits to `[-1e4, 1e4]` before `log_softmax`.
+
+**Issue B — agg_loss zero denominator (VERY LOW RISK)**
+
+With `loss_agg_mode="token-mean"`, `effective_mask.sum() == 0` → masked_sum / 0 = NaN.
+Fix applied (2026-02-25): guard before `agg_loss`; skip micro-batch and log `onpolicy_kd_skipped=1.0`.
+
+**Issue C — K-slice softmax vs full-vocab (DESIGN NOTE, no NaN)**
+
+Current KL is `KL(teacher_K || student_K)` where both are renormalized over K tokens — a useful
+training signal but not the true forward KL(teacher‖student). Documented v1 behavior, low priority.
+
+**Issue D — dp_actor KD agg_loss missing global_batch_info (MULTI-GPU)**
+
+No `dp_size` passed to `agg_loss` for KD (unlike policy loss). Irrelevant for single-GPU;
+document for future FSDP runs.
+
+### Success Criteria for Next Run
+
+- `actor/onpolicy_kd_skipped:0.0` at every step
+- `actor/onpolicy_kd_loss` finite and positive (expected ~0.3–2.0 initially)
+- `actor/onpolicy_kd_coef` ramps from ~0.05 (step 1) → 0.1 (step 2+)
+- `actor/grad_norm` does not spike
