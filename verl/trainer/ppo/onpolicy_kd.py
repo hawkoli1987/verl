@@ -128,12 +128,19 @@ def _score_single(
     timeout_s: float,
     max_retries: int,
     seq_idx: int,
-    response_length: int,
+    actual_response_length: int,
+    output_response_length: int,
     device: torch.device,
 ) -> tuple[int, torch.Tensor, torch.Tensor, bool]:
     """Score one sequence against the teacher endpoint.
 
-    Returns ``(seq_idx, topk_ids [T,K], topk_lps [T,K], success)``.
+    Returns ``(seq_idx, topk_ids [output_T, K], topk_lps [output_T, K], success)``.
+
+    *actual_response_length* is the number of tokens the teacher should score
+    for the response region (last N tokens of *sequence*).
+    *output_response_length* is the padded output dimension (>= actual_response_length).
+    The teacher data is placed at positions 0..*actual_response_length-1*; the
+    remaining positions stay zero/−inf.
     """
     url = f"{base_url.rstrip('/')}/completions"
     payload = build_teacher_payload(model, sequence, topk, temperature)
@@ -142,9 +149,16 @@ def _score_single(
     for attempt in range(max_retries + 1):
         try:
             response = _do_request(url, payload, timeout_s)
-            ids, lps = extract_topk_tensors_from_openai_response(
-                response, tokenizer, topk, response_length, device
+            ids_actual, lps_actual = extract_topk_tensors_from_openai_response(
+                response, tokenizer, topk, actual_response_length, device
             )
+            # Embed into output_response_length-sized tensors
+            if output_response_length == actual_response_length:
+                return seq_idx, ids_actual, lps_actual, True
+            ids = torch.zeros((output_response_length, topk), dtype=torch.long, device=device)
+            lps = torch.full((output_response_length, topk), float("-inf"), dtype=torch.float32, device=device)
+            ids[:actual_response_length] = ids_actual
+            lps[:actual_response_length] = lps_actual
             return seq_idx, ids, lps, True
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
@@ -152,8 +166,8 @@ def _score_single(
                 time.sleep(0.5 * (attempt + 1))
 
     # All attempts exhausted — return zero/−inf tensors and signal failure
-    ids = torch.zeros((response_length, topk), dtype=torch.long, device=device)
-    lps = torch.full((response_length, topk), float("-inf"), dtype=torch.float32, device=device)
+    ids = torch.zeros((output_response_length, topk), dtype=torch.long, device=device)
+    lps = torch.full((output_response_length, topk), float("-inf"), dtype=torch.float32, device=device)
     return seq_idx, ids, lps, False
 
 
@@ -162,7 +176,7 @@ def score_sequences(
     model: str,
     tokenizer,
     sequences: list[str],
-    response_length: int,
+    response_length: "int | list[int]",
     topk: int = 64,
     temperature: float = 1.0,
     timeout_s: float = 30.0,
@@ -182,10 +196,14 @@ def score_sequences(
             completions payload.
         tokenizer: HuggingFace tokenizer used to map decoded token strings back
             to integer IDs.
-        sequences: List of B full-context strings (prompt + response concatenated).
-        response_length: Number of tokens in the response region.  Only the
-            last *response_length* positions of each returned ``top_logprobs``
-            list are kept.
+        sequences: List of B actual (non-padded) content strings.  Each string
+            should be the concatenation of the prompt and the actual (non-padding)
+            response tokens only — **without** any pad tokens.
+        response_length: Number of tokens in the response region.  May be a
+            scalar (same for all sequences) or a list of B per-sequence lengths.
+            Only the last *response_length* positions of each returned
+            ``top_logprobs`` list are kept.  The output tensor ``T`` dimension
+            equals ``max(response_length)``.
         topk: Number of top tokens to request per position.
         temperature: Softmax temperature forwarded to the teacher.
         timeout_s: Per-request HTTP timeout in seconds.
@@ -201,9 +219,16 @@ def score_sequences(
         device = torch.device("cpu")
 
     B = len(sequences)
-    topk_token_ids = torch.zeros((B, response_length, topk), dtype=torch.long, device=device)
+    if isinstance(response_length, int):
+        per_seq_lengths = [response_length] * B
+    else:
+        per_seq_lengths = list(response_length)
+
+    output_T = max(per_seq_lengths)
+
+    topk_token_ids = torch.zeros((B, output_T, topk), dtype=torch.long, device=device)
     topk_logprobs = torch.full(
-        (B, response_length, topk), float("-inf"), dtype=torch.float32, device=device
+        (B, output_T, topk), float("-inf"), dtype=torch.float32, device=device
     )
     valid_mask = torch.zeros(B, dtype=torch.bool, device=device)
 
@@ -220,7 +245,8 @@ def score_sequences(
                 timeout_s,
                 max_retries,
                 i,
-                response_length,
+                per_seq_lengths[i],
+                output_T,
                 device,
             ): i
             for i, seq in enumerate(sequences)

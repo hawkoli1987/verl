@@ -674,14 +674,30 @@ class DataParallelPPOActor(BasePPOActor):
                         onpolicy_kd_loss_precomp = model_inputs.get("onpolicy_kd_loss", None)
 
                         if response_logits_for_kd is not None and teacher_topk_ids is not None and teacher_topk_lps is not None:
-                            # Compute per-token forward KL(teacher || student) on teacher top-K support
+                            # Compute per-token forward KL(teacher || student) on teacher top-K support.
                             kd_logits = response_logits_for_kd.float() / max(float(kd_cfg.temperature), 1e-6)
                             student_topk_logits = torch.gather(kd_logits, dim=-1, index=teacher_topk_ids)
+                            student_topk_logits = student_topk_logits.clamp(-1e4, 1e4)
                             student_topk_lps = torch.log_softmax(student_topk_logits, dim=-1)
-                            teacher_topk_renorm = teacher_topk_lps - torch.logsumexp(teacher_topk_lps, dim=-1, keepdim=True)
-                            teacher_probs = torch.exp(teacher_topk_renorm)
-                            token_kd = torch.sum(teacher_probs * (teacher_topk_renorm - student_topk_lps), dim=-1)
-                            kd_loss = agg_loss(loss_mat=token_kd, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                            # positions where ALL top-K teacher logprobs are -inf (no teacher data)
+                            teacher_has_data = teacher_topk_lps.isfinite().any(dim=-1)  # [B, T]
+                            safe_lps = teacher_topk_lps.clone()
+                            # 1. zero out fully-invalid positions (all K entries -inf) to avoid -inf logsumexp
+                            safe_lps[~teacher_has_data] = 0.0
+                            # 2. replace individual -inf entries (token not in teacher top-K) so they get ~0 prob
+                            safe_lps = safe_lps.nan_to_num(nan=0.0, posinf=0.0, neginf=-100.0)
+                            teacher_topk_renorm = safe_lps - torch.logsumexp(safe_lps, dim=-1, keepdim=True)
+                            teacher_probs = torch.exp(teacher_topk_renorm)  # ~0 for neginf entries
+                            # per-entry KL; zero out 0 * (-inf) = NaN from zero-prob teacher entries
+                            kl_per_entry = teacher_probs * (teacher_topk_renorm - student_topk_lps)
+                            kl_per_entry = kl_per_entry.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+                            token_kd = kl_per_entry.sum(dim=-1)
+                            # zero out positions with no teacher data; combine with response_mask
+                            effective_mask = response_mask * teacher_has_data.float()
+                            if effective_mask.sum() == 0:
+                                kd_loss = None
+                            else:
+                                kd_loss = agg_loss(loss_mat=token_kd, loss_mask=effective_mask, loss_agg_mode=loss_agg_mode)
                         elif onpolicy_kd_loss_precomp is not None:
                             kd_loss = agg_loss(
                                 loss_mat=onpolicy_kd_loss_precomp,
