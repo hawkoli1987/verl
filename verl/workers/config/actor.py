@@ -25,7 +25,14 @@ from .engine import FSDPEngineConfig, McoreEngineConfig
 from .model import HFModelConfig
 from .optimizer import OptimizerConfig
 
-__all__ = ["PolicyLossConfig", "RouterReplayConfig", "ActorConfig", "FSDPActorConfig", "McoreActorConfig"]
+__all__ = [
+    "PolicyLossConfig",
+    "OnPolicyKDConfig",
+    "RouterReplayConfig",
+    "ActorConfig",
+    "FSDPActorConfig",
+    "McoreActorConfig",
+]
 
 
 @dataclass
@@ -78,6 +85,29 @@ class PolicyLossConfig(BaseConfig):
     clip_cov_ub: float = 5.0
     kl_cov_ratio: float = 0.0002
     ppo_kl_coef: float = 0.1
+
+
+@dataclass
+class OnPolicyKDConfig(BaseConfig):
+    """Configuration for onpolicyKD_RL teacher-guided distillation.
+
+    v1 scope:
+    - fixed top-k support from teacher
+    - forward KL(teacher || student) on teacher truncated support
+    - optional warmup for KD coefficient
+    - fail-open when teacher scoring is unavailable
+    """
+
+    enable: bool = False
+    teacher_base_url: Optional[str] = None
+    teacher_model: Optional[str] = None
+    topk: int = 64
+    temperature: float = 1.0
+    lambda_kd: float = 0.0
+    warmup_ratio: float = 0.1
+    fail_open: bool = True
+    timeout_ms: int = 30_000
+    max_retries: int = 2
 
 
 @dataclass
@@ -140,6 +170,7 @@ class ActorConfig(BaseConfig):
     clip_ratio_high: float = 0.2
     freeze_vision_tower: bool = False
     policy_loss: PolicyLossConfig = field(default_factory=PolicyLossConfig)
+    onpolicy_kd: OnPolicyKDConfig = field(default_factory=OnPolicyKDConfig)
     clip_ratio_c: float = 3.0
     loss_agg_mode: str = "token-mean"
     loss_scale_factor: Optional[int] = None
