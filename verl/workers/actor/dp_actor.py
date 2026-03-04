@@ -368,7 +368,7 @@ class DataParallelPPOActor(BasePPOActor):
 
                     # Save raw response logits for KD before temperature scaling.
                     # Only in the non-rmpad path; guarded by the enable flag to avoid memory cost.
-                    _kd_enabled = self.config.onpolicy_kd.enable
+                    _kd_enabled = getattr(getattr(self.config, "onpolicy_kd", None), "enable", False)
                     _response_logits = None
                     if _kd_enabled:
                         _response_logits = logits[:, -response_length - 1 : -1, :].clone()
@@ -537,7 +537,7 @@ class DataParallelPPOActor(BasePPOActor):
         if "rollout_log_probs" in data.batch.keys():
             select_keys.append("rollout_log_probs")
         # Include onpolicy KD tensors if present in batch.
-        if self.config.onpolicy_kd.enable:
+        if getattr(getattr(self.config, "onpolicy_kd", None), "enable", False):
             for _kd_key in ("teacher_topk_token_ids", "teacher_topk_logprobs", "onpolicy_kd_loss"):
                 if _kd_key in data.batch.keys():
                     select_keys.append(_kd_key)
@@ -665,7 +665,7 @@ class DataParallelPPOActor(BasePPOActor):
                         micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
 
                     # add onpolicy KD term
-                    if self.config.onpolicy_kd.enable:
+                    if getattr(getattr(self.config, "onpolicy_kd", None), "enable", False):
                         kd_cfg = self.config.onpolicy_kd
                         response_logits_for_kd = outputs.get("response_logits", None)
                         teacher_topk_ids = model_inputs.get("teacher_topk_token_ids", None)
