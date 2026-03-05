@@ -362,3 +362,32 @@ def apply_patch_mbridge():
             return tp_group
 
         megatron.core.utils.get_tensor_model_parallel_group_if_none = get_tensor_model_parallel_group_if_none
+
+    try:
+        from mbridge.core.safetensor_io import SafeTensorIO
+
+        _original_safetensor_io_init = SafeTensorIO.__init__
+
+        def _patched_safetensor_io_init(self, hf_dir):
+            _original_safetensor_io_init(self, hf_dir)
+            # mbridge v0.15.1 bug: the tie_word_embeddings filter that removes
+            # lm_head.weight from self.index only runs when model.safetensors.index.json
+            # exists.  For single-file models (no index json) lm_head.weight stays in
+            # the index, but Megatron never exports it separately (it's tied to the
+            # embedding).  save_hf_weight_merge then crashes with FileNotFoundError.
+            import os
+
+            index_file = os.path.join(hf_dir, "model.safetensors.index.json")
+            if not os.path.exists(index_file) and "lm_head.weight" in self.index:
+                try:
+                    from transformers import AutoConfig
+
+                    config = AutoConfig.from_pretrained(hf_dir)
+                    if getattr(config, "tie_word_embeddings", False):
+                        self.index.pop("lm_head.weight")
+                except Exception:
+                    pass
+
+        SafeTensorIO.__init__ = _patched_safetensor_io_init
+    except ImportError:
+        pass
