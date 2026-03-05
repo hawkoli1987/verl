@@ -495,12 +495,15 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         if self.config.trainer.save_freq > 0 and (
             self.current_param_version % self.config.trainer.save_freq == 0 or esi_close_to_expiration
         ):
+            if self.current_param_version == self.last_ckpt_version and self.global_steps > 1:
+                return
             if esi_close_to_expiration:
                 print("Force saving checkpoint: ESI instance expiration approaching.")
             with marked_timer("save_checkpoint", timing_raw, color="green"):
                 # sleep replicas to avoid OOM during checkpoint saving
                 # self.checkpoint_manager.sleep_replicas()
                 self._save_checkpoint()
+                self.last_ckpt_version = self.current_param_version
                 # wake replicas to avoid OOM during checkpoint saving
                 # self.checkpoint_manager.update_weights()
 
@@ -648,7 +651,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
                 if key.startswith("fully_async") or key.startswith("timing_s"):
                     metrics[key] = value
 
-    async def _trigger_parameter_sync_after_step(self, validate: bool = False):
+    async def _trigger_parameter_sync_after_step(self, validate: bool = False, global_steps: int = 0):
         """
         Trigger parameter synchronization after training step
         This ensures rollouter always uses the latest trained parameters
