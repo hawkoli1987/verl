@@ -208,6 +208,7 @@ class BaseDetachNcclSync:
             self._run_async_safely(inference_model.resume_memory_occupation(tags=["kv_cache"]))
 
     def _sync_vllm_weights(self, inference_model, params, sync_group_name):
+        collected_weights = []
         for key, shape, dtype in self._weights_info:
             tensor = torch.empty(shape, dtype=dtype, device=get_torch_device().current_device())
             if self._is_actor:
@@ -222,7 +223,11 @@ class BaseDetachNcclSync:
             else:
                 collective.broadcast(tensor, src_rank=0, group_name=sync_group_name)
             if self._is_rollout:
-                inference_model.load_weights([(key, tensor)])
+                if inference_model is not None:
+                    inference_model.load_weights([(key, tensor)])
+                else:
+                    collected_weights.append((key, tensor))
+        return collected_weights
 
     async def update_weights(self, inference_engine, params):
         from sglang.srt.weight_sync.utils import update_weights as sgl_update_weights

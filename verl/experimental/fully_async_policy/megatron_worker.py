@@ -63,12 +63,19 @@ class DetachNcclSync(BaseDetachNcclSync, AsyncActorRolloutRefWorker):
 
         rollout_name = self.config.rollout.name
         inference_model = None
+        is_vllm_server_adapter = False
         if self._is_rollout and (not self._is_actor):
             if rollout_name == "vllm":
-                inference_model = BaseDetachNcclSync.get_inference_model(self.rollout)
-                from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+                from verl.workers.rollout.vllm_rollout.vllm_rollout import ServerAdapter as VLLMServerAdapter
 
-                patch_vllm_moe_model_weight_loader(inference_model)
+                if isinstance(self.rollout, VLLMServerAdapter):
+                    is_vllm_server_adapter = True
+                    inference_model = None
+                else:
+                    inference_model = BaseDetachNcclSync.get_inference_model(self.rollout)
+                    from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+
+                    patch_vllm_moe_model_weight_loader(inference_model)
             elif rollout_name == "sglang":
                 inference_model = self.rollout._engine
                 if inference_model is None:
@@ -82,8 +89,6 @@ class DetachNcclSync(BaseDetachNcclSync, AsyncActorRolloutRefWorker):
                         return self.rollout._engine
 
                     inference_model = self._run_async_safely(init_engine())
-                    # For ServerAdapter, only TP rank 0 initializes the engine
-                    # TP rank != 0 can safely have inference_model as None
                     from verl.workers.rollout.sglang_rollout.sglang_rollout import ServerAdapter
 
                     is_server_adapter = isinstance(self.rollout, ServerAdapter)
@@ -110,7 +115,10 @@ class DetachNcclSync(BaseDetachNcclSync, AsyncActorRolloutRefWorker):
         if rollout_name == "sglang" and self._is_rollout:
             self._sync_sglang_weights(inference_model, params, sync_group_name)
         else:
-            self._sync_vllm_weights(inference_model, params, sync_group_name)
+            collected = self._sync_vllm_weights(inference_model, params, sync_group_name)
+            if self._is_rollout and is_vllm_server_adapter and collected:
+                print(f"[sync_rollout_weights] Pushing {len(collected)} weight tensors to vLLM server via IPC")
+                self._run_async_safely(self.rollout.update_weights(iter(collected)))
 
         if self._is_actor and self._is_offload_param:
             offload_megatron_model_to_cpu(self.actor_module)
