@@ -616,6 +616,8 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         if self.config.trainer.save_freq > 0 and (
             force or self.current_param_version % self.config.trainer.save_freq == 0 or esi_close_to_expiration
         ):
+            if self.current_param_version == self.last_ckpt_version and self.global_steps > 1:
+                return
             if esi_close_to_expiration:
                 print("Force saving checkpoint: ESI instance expiration approaching.")
             with marked_timer("save_checkpoint", timing_raw, color="green"):
