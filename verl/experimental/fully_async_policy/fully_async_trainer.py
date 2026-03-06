@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ctypes
+import gc
 import logging
 import os
 import time
@@ -19,6 +21,7 @@ from datetime import datetime
 from pprint import pprint
 from typing import Any
 
+import psutil
 import ray
 from omegaconf import OmegaConf, open_dict
 from tqdm import tqdm
@@ -627,6 +630,13 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
 
     def _fit_postprocess_step(self):
         self.global_steps += 1
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
+        rss_gb = psutil.Process().memory_info().rss / (1024**3)
+        print(f"[FullyAsyncTrainer] Post-step GC: process RSS={rss_gb:.2f} GB")
 
         self.metrics_aggregator.add_step_metrics(
             metrics=self.metrics, sample_count=self.required_samples, timestamp=time.time()
