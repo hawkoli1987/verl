@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ctypes
+import gc
 import os
 import time
 from datetime import datetime
 from pprint import pprint
 from typing import Any
 
+import psutil
 import ray
 from tqdm import tqdm
 
@@ -509,6 +512,13 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
 
     def _fit_postprocess_step(self):
         self.global_steps += 1
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
+        rss_gb = psutil.Process().memory_info().rss / (1024**3)
+        print(f"[FullyAsyncTrainer] Post-step GC: process RSS={rss_gb:.2f} GB")
 
     def _save_checkpoint(self):
         # Warning: Currently, to align the training process and metrics of colocate,
