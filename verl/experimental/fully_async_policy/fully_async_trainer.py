@@ -419,7 +419,7 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         if self.current_param_version % self.config.trainer.test_freq != 0 or self.local_trigger_step > 1:
             await self._fit_update_weights()
             await self._fit_validate()
-        self._fit_save_checkpoint(force=True)
+        self._fit_save_checkpoint(force=True, is_last_step=True)
 
     async def fit_step(self, batch_dict: dict = None):
         """
@@ -599,8 +599,8 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
                 )
         self.logger.log(data=val_metrics.timing_raw, step=self.current_param_version)
 
-    def _fit_save_checkpoint(self, force=False):
-        if self.current_param_version == self.last_ckpt_version:
+    def _fit_save_checkpoint(self, force=False, is_last_step: bool = False):
+        if self.current_param_version == self.last_ckpt_version and not (force or is_last_step):
             return
 
         timing_raw = self.timing_raw
@@ -617,7 +617,10 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         # 3. The current step number is a multiple of the save frequency.
         # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
         if self.config.trainer.save_freq > 0 and (
-            force or self.current_param_version % self.config.trainer.save_freq == 0 or esi_close_to_expiration
+            force
+            or is_last_step
+            or self.current_param_version % self.config.trainer.save_freq == 0
+            or esi_close_to_expiration
         ):
             if self.current_param_version == self.last_ckpt_version and self.global_steps > 1:
                 return

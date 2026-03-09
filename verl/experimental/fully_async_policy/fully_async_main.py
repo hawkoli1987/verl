@@ -210,6 +210,7 @@ def main(config):
     config.actor_rollout_ref.rollout.n_gpus_per_node = config.rollout.n_gpus_per_node
     run_ppo(config, task_runner_class=FullyAsyncTaskRunner)
     print(f"total time: {time() - start_time:.2f} seconds")
+    os._exit(0)
 
 
 if __name__ == "__main__":
