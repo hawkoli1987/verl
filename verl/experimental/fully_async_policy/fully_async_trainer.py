@@ -320,12 +320,34 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         1. Ray resource pools from configuration
         2. Worker groups for each role (actor, critic, etc.)
         """
+        self._propagate_total_training_steps()
         self._init_resource_pools()
         self._create_worker_classes()
         self._init_worker_groups()
         self._init_models()
         self._init_reward_loop()
         await self._init_async_rollout_manager()
+
+    def _propagate_total_training_steps(self):
+        """Inject total_training_steps into optimizer configs before model init.
+
+        The standard RayPPOTrainer does this in its fit() method, but the
+        fully-async trainer calls init_workers (which builds the optimizer)
+        before fit() is reached. Without this, lr_decay_steps defaults to -1
+        and Megatron's OptimizerParamScheduler raises an assertion.
+        """
+        from omegaconf import OmegaConf, open_dict
+
+        total_training_steps = getattr(self.config.trainer, "total_training_steps", None)
+        if total_training_steps is None or total_training_steps <= 0:
+            return
+
+        with open_dict(self.config):
+            if OmegaConf.select(self.config, "actor_rollout_ref.actor.optim"):
+                self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
+            if OmegaConf.select(self.config, "critic.optim"):
+                self.config.critic.optim.total_training_steps = total_training_steps
+        print(f"[FullyAsyncTrainer] Propagated total_training_steps={total_training_steps} to optimizer configs")
 
     def _init_reward_loop(self):
         if self.config.async_training.use_trainer_do_validate:
