@@ -270,7 +270,10 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         # 3. and apply the following patch in ray==2.10, https://github.com/ray-project/ray/pull/44385
         if not torch.distributed.is_initialized():
             set_numa_affinity()
-            rank = int(os.environ["LOCAL_RANK"])
+            if torch.cuda.device_count() == 1:
+                rank = 0
+            else:
+                rank = int(os.environ["LOCAL_RANK"])
             torch.distributed.init_process_group(
                 backend=f"cpu:gloo,{get_device_name()}:{get_nccl_backend()}",
                 timeout=datetime.timedelta(seconds=self.config.get("nccl_timeout", 600)),
@@ -1011,7 +1014,10 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
         # 3. and apply the following patch in ray==2.10, https://github.com/ray-project/ray/pull/44385
         if not torch.distributed.is_initialized():
             set_numa_affinity()
-            rank = int(os.environ["LOCAL_RANK"])
+            if torch.cuda.device_count() == 1:
+                rank = 0
+            else:
+                rank = int(os.environ["LOCAL_RANK"])
             torch.distributed.init_process_group(
                 backend=get_nccl_backend(),
                 timeout=datetime.timedelta(seconds=self.config.get("nccl_timeout", 600)),

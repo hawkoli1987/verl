@@ -129,7 +129,12 @@ class ParameterSynchronizer:
 
         # sync weights
         rollout_name = getattr(self.config.actor_rollout_ref.rollout, "name", None)
-        use_checkpoint_engine = self.config.async_training.checkpoint_engine.enable and rollout_name != "sglang"
+        hybrid_engine = getattr(self.config.actor_rollout_ref, "hybrid_engine", False)
+        use_checkpoint_engine = (
+            self.config.async_training.checkpoint_engine.enable
+            and rollout_name != "sglang"
+            and hybrid_engine
+        )
         if use_checkpoint_engine:
             self.actor_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name)
             ray.get(self.rollout_wg.sync_rollout_weights_by_checkpoint(self.sync_group_name))
