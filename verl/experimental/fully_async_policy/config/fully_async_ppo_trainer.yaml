@@ -40,8 +40,8 @@ rollout:
   # number of responses (i.e. num sample times). > 1 for grpo
   n: 4
 
-  # total rollout samples # TODO rename to total_rollout_samples
-  total_rollout_steps: 100
+  # total rollout samples # TODO rename to total_rollout_samples. null = use len(train_dataloader)*total_epochs
+  total_rollout_steps: null
 
 data:
   # Number of samples generated, currently only support 1
