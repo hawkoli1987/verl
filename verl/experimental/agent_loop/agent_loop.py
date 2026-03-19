@@ -599,8 +599,11 @@ class AgentLoopWorker:
                 dataset_cls=self.dataset_cls,
                 data_config=DictConfigWrap(self.config.data),
             )
-            output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-            return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
+            kwargs_with_trajectory = dict(kwargs, trajectory=trajectory)
+            output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs_with_trajectory)
+            return await self._agent_loop_postprocess(
+                output, trajectory["validate"], **kwargs_with_trajectory
+            )
 
     async def _agent_loop_postprocess(self, output, validate, **kwargs) -> _InternalAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
@@ -832,8 +835,16 @@ class AgentLoopWorker:
                 },
                 batch_size=1,
             )
+            # Exclude trajectory from non_tensor_batch; use it for meta_info (eval save needs validate, global_steps)
+            trajectory = kwargs.get("trajectory")
+            meta_info = {}
+            if trajectory is not None:
+                meta_info = {
+                    "validate": trajectory.get("validate", False),
+                    "global_steps": trajectory.get("step", 0),
+                }
             non_tensor_batch = {
-                **{k: np.array([v]) for k, v in kwargs.items()},
+                **{k: np.array([v]) for k, v in kwargs.items() if k != "trajectory"},
                 "__num_turns__": np.array([output.num_turns]),
                 "tool_extra_fields": np.array([output.extra_fields], dtype=object),
             }
@@ -841,6 +852,7 @@ class AgentLoopWorker:
             data = DataProto(
                 batch=batch,
                 non_tensor_batch=non_tensor_batch,
+                meta_info=meta_info,
             )
             selected_reward_loop_worker_handle = random.choice(self.reward_loop_worker_handles)
             result = await selected_reward_loop_worker_handle.compute_score.remote(data)
