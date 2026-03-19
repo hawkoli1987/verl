@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import os
 from collections import defaultdict
 from typing import Any
 
@@ -55,6 +57,7 @@ class NaiveRewardManager(AbstractRewardManager):
         reward_extra_info = defaultdict(list)
 
         already_print_data_sources = {}
+        eval_samples = []  # Collect (prompt, response, score) for eval save
 
         for i in range(len(data)):
             data_item = data[i]  # DataProtoItem
@@ -99,6 +102,8 @@ class NaiveRewardManager(AbstractRewardManager):
 
             reward_tensor[i, valid_response_length - 1] = reward
 
+            eval_samples.append((prompt_str, response_str, reward))
+
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
 
@@ -112,6 +117,21 @@ class NaiveRewardManager(AbstractRewardManager):
                         print(f"[{key}]", value)
                 else:
                     print("[score]", score)
+
+        # Save validation samples to JSONL if VERL_LOG_DIR is set (mirror IFRewardManager)
+        is_validate = data.meta_info.get("validate", False) if hasattr(data, "meta_info") else False
+        if is_validate and eval_samples:
+            log_dir = os.environ.get("VERL_LOG_DIR", "")
+            global_steps = data.meta_info.get("global_steps", 0) if hasattr(data, "meta_info") else 0
+            if log_dir:
+                eval_dir = os.path.join(log_dir, "eval_generations")
+                os.makedirs(eval_dir, exist_ok=True)
+                jsonl_path = os.path.join(eval_dir, f"eval_{global_steps:04d}.jsonl")
+                with open(jsonl_path, "a") as f:
+                    for prompt_str, response_str, reward in eval_samples:
+                        sample = {"step": global_steps, "prompt": prompt_str, "response": response_str, "score": float(reward)}
+                        f.write(json.dumps(sample) + "\n")
+                print(f"[eval_gen] Saved {len(eval_samples)} validation samples to {jsonl_path}")
 
         if return_dict:
             return {
