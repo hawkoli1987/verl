@@ -340,7 +340,12 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
 
         total_training_steps = getattr(self.config.trainer, "total_training_steps", None)
         if total_training_steps is None or total_training_steps <= 0:
-            return
+            # trainer.total_training_steps=0 from defaults; use user-set actor optim or fallback
+            total_training_steps = OmegaConf.select(
+                self.config, "actor_rollout_ref.actor.optim.total_training_steps"
+            )
+            if total_training_steps is None or total_training_steps <= 0:
+                total_training_steps = 10000  # fallback to avoid lr_decay_steps assertion
 
         with open_dict(self.config):
             if OmegaConf.select(self.config, "actor_rollout_ref.actor.optim"):

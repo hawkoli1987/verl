@@ -387,7 +387,13 @@ class RayPPOTrainer:
 
         total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
 
-        if self.config.trainer.total_training_steps is not None:
+        # Only use trainer.total_training_steps when explicitly set to a positive value.
+        # Default 0 or None means "compute from dataloader" to avoid overwriting
+        # user-set actor_rollout_ref.actor.optim.total_training_steps with 0.
+        if (
+            self.config.trainer.total_training_steps is not None
+            and self.config.trainer.total_training_steps > 0
+        ):
             total_training_steps = self.config.trainer.total_training_steps
 
         self.total_training_steps = total_training_steps

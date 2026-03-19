@@ -80,10 +80,13 @@ def get_megatron_optimizer_param_scheduler(
     """
     Get the optimizer parameter scheduler for Megatron.
     """
-    lr_decay_steps = config.lr_decay_steps
+    lr_decay_steps = config.get("lr_decay_steps", None) or getattr(config, "lr_decay_steps", None)
     lr_warmup_steps = config.lr_warmup_steps
-    if config.get("lr_decay_steps", None) is None:
-        lr_decay_steps = config.total_training_steps
+    if lr_decay_steps is None or lr_decay_steps <= 0:
+        total_steps = config.get("total_training_steps", None) or getattr(config, "total_training_steps", None)
+        lr_decay_steps = total_steps if (total_steps is not None and total_steps > 0) else None
+    if lr_decay_steps is None or lr_decay_steps <= 0:
+        lr_decay_steps = 100000  # fallback to avoid Megatron OptimizerParamScheduler assertion
     wsd_decay_steps = None
     if config.get("lr_wsd_decay_steps", None) is not None:
         wsd_decay_steps = config.lr_wsd_decay_steps
