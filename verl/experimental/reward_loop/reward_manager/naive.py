@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import inspect
+import json
+import os
 
 from verl import DataProto
 from verl.experimental.reward_loop.reward_manager import register
@@ -95,5 +97,22 @@ class NaiveRewardManager(RewardManagerBase):
             reward_extra_info["acc"] = score
 
         reward = score
+
+        # Save validation samples to JSONL if VERL_LOG_DIR is set (mirror legacy NaiveRewardManager)
+        is_validate = data.meta_info.get("validate", False) if hasattr(data, "meta_info") and data.meta_info else False
+        if is_validate:
+            log_dir = os.environ.get("VERL_LOG_DIR", "")
+            global_steps = data.meta_info.get("global_steps", 0) if hasattr(data, "meta_info") and data.meta_info else 0
+            if log_dir:
+                prompt_str = await self.loop.run_in_executor(
+                    None, lambda: self.tokenizer.decode(data_item.batch["prompts"][0], skip_special_tokens=True)
+                )
+                eval_dir = os.path.join(log_dir, "eval_generations")
+                os.makedirs(eval_dir, exist_ok=True)
+                jsonl_path = os.path.join(eval_dir, f"eval_{global_steps:04d}.jsonl")
+                with open(jsonl_path, "a") as f:
+                    sample = {"step": global_steps, "prompt": prompt_str, "response": response_str, "score": float(reward)}
+                    f.write(json.dumps(sample) + "\n")
+                # Note: per-sample append; for batch validation, each sample appends to same file
 
         return {"reward_score": reward, "reward_extra_info": reward_extra_info}

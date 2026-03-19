@@ -198,7 +198,8 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorker):
                 )
                 if not output.extra_fields.get("is_cancel", False):
                     kwargs.pop("output", None)
-                    output = await self._agent_loop_postprocess(output, **kwargs)
+                    kwargs_with_trajectory = dict(kwargs, trajectory=trajectory)
+                    output = await self._agent_loop_postprocess(output, **kwargs_with_trajectory)
 
                 return output
         except Exception:
