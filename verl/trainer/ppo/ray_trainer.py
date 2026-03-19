@@ -517,7 +517,7 @@ class RayPPOTrainer:
         batch_reward = self.reward_loop_manager.compute_rm_score(batch)
         return batch_reward
 
-    def _validate(self, merged: bool = False):
+    def _validate(self, merged: bool = False, wandb_step: int = None):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
@@ -554,7 +554,7 @@ class RayPPOTrainer:
                 "recompute_log_prob": False,
                 "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
                 "validate": True,
-                "global_steps": self.global_steps,
+                "global_steps": wandb_step if wandb_step is not None else self.global_steps,
             }
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
