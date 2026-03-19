@@ -45,6 +45,7 @@ def is_torch_npu_available(check_device=True) -> bool:
 
 is_cuda_available = torch.cuda.is_available()
 is_npu_available = is_torch_npu_available()
+_cuda_fallback_warned = False
 
 
 def get_resource_name() -> str:
@@ -83,10 +84,13 @@ def get_device_name() -> str:
     if is_npu_available:
         return "npu"
     if os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
-        logger.warning(
-            "torch.cuda.is_available() returned False but CUDA_VISIBLE_DEVICES is set; "
-            "assuming CUDA device. This can happen in Ray workers inside containers."
-        )
+        global _cuda_fallback_warned
+        if not _cuda_fallback_warned:
+            logger.warning(
+                "torch.cuda.is_available() returned False but CUDA_VISIBLE_DEVICES is set; "
+                "assuming CUDA device. This can happen in Ray workers inside containers."
+            )
+            _cuda_fallback_warned = True
         return "cuda"
     return "cpu"
 

@@ -109,7 +109,10 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
         from verl.utils.dataset.rl_dataset import collate_fn
 
         train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor)
-        val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor)
+        val_dataset = create_rl_dataset(
+            config.data.val_files, config.data, tokenizer, processor,
+            max_samples=config.data.get("val_max_samples", -1),
+        )
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         self._validate_config()
@@ -298,7 +301,7 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
     ):
         val_metrics = None
         with marked_timer("rollouter/validate_time", timing_raw, color="green"):
-            val_metrics: dict = self._validate(use_trainer_do_validate)
+            val_metrics: dict = self._validate(use_trainer_do_validate, wandb_step=version)
         data = ValidateMetrics(
             timing_raw=timing_raw, metrics=val_metrics, global_steps=global_steps, param_version=version
         )

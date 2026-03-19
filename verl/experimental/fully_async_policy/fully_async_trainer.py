@@ -159,7 +159,10 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
             from verl.trainer.main_ppo import create_rl_dataset
             from verl.utils.dataset.rl_dataset import collate_fn
 
-            val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor)
+            val_dataset = create_rl_dataset(
+                config.data.val_files, config.data, tokenizer, processor,
+                max_samples=config.data.get("val_max_samples", -1),
+            )
             rollout_gpus = config.rollout.nnodes * config.rollout.n_gpus_per_node
             print(f"[FullyAsyncTrainer] split before val_dataset total len: {len(val_dataset)}")
             split_dataset = val_dataset.split(total_gpus)
