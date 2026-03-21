@@ -63,6 +63,9 @@ data_parallel_size: 1
 # EP>1 (should satisfy EP=TP*DP) refers to EP parallel in fused_moe
 expert_parallel_size: 1
 
+# When true, expert_parallel_size is derived as data_parallel_size * tensor_model_parallel_size
+enable_expert_parallel: false
+
 # PP size for rollout.
 pipeline_model_parallel_size: 1
 
