@@ -226,7 +226,11 @@ class BaseDetachNcclSync:
                 if inference_model is not None:
                     inference_model.load_weights([(key, tensor)])
                 else:
-                    collected_weights.append((key, tensor))
+                    # Move tensor to CPU immediately after broadcast to free GPU memory.
+                    # The ServerAdapter path collects all weights and pushes via IPC.
+                    # Keeping them on GPU would OOM (8+ GiB accumulation on a fully-used GPU).
+                    collected_weights.append((key, tensor.cpu()))
+                    del tensor
         return collected_weights
 
     async def update_weights(self, inference_engine, params):

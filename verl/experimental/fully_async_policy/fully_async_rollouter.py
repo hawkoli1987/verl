@@ -424,12 +424,19 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
         await self._init_async_rollout_manager()
 
     def _create_actor_rollout_classes(self):
+        # Resolve OmegaConf interpolations while the full config tree is available.
+        # When actor_rollout_ref is serialized to Ray workers, cross-tree references
+        # (global_profiler.*, etc.) break because the parent config is no longer reachable.
+        from omegaconf import OmegaConf
+        resolved_config = OmegaConf.to_container(self.config.actor_rollout_ref, resolve=True)
+        resolved_config = OmegaConf.create(resolved_config)
+
         # only create rollout
         for role in [Role.Rollout]:
             resource_pool = self.resource_pool_manager.get_resource_pool(role)
             role_cls = RayClassWithInitArgs(
                 cls=self.role_worker_mapping[role],
-                config=self.config.actor_rollout_ref,
+                config=resolved_config,
                 role=str(role),
             )
             self.resource_pool_to_cls[resource_pool][str(role)] = role_cls
