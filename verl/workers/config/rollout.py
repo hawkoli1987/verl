@@ -134,7 +134,7 @@ class CheckpointEngineConfig(BaseConfig):
 
 @dataclass
 class RolloutConfig(BaseConfig):
-    _mutable_fields = {"max_model_len", "load_format"}
+    _mutable_fields = {"max_model_len", "load_format", "expert_parallel_size"}
 
     name: Optional[str] = MISSING
     mode: str = "async"
@@ -161,6 +161,7 @@ class RolloutConfig(BaseConfig):
     free_cache_engine: bool = True
     data_parallel_size: int = 1
     expert_parallel_size: int = 1
+    enable_expert_parallel: bool = False
     tensor_model_parallel_size: int = 2
     pipeline_model_parallel_size: int = 1
     max_num_batched_tokens: int = 8192
@@ -240,6 +241,12 @@ class RolloutConfig(BaseConfig):
 
     def __post_init__(self):
         """Validate the rollout config"""
+        # When enable_expert_parallel is True, derive expert_parallel_size from DP*TP
+        if self.enable_expert_parallel:
+            self.expert_parallel_size = (
+                self.data_parallel_size * self.tensor_model_parallel_size
+            )
+
         # Deprecation warning for mode field - only async mode is supported
         if self.mode == "sync":
             raise ValueError(

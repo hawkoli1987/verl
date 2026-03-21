@@ -55,6 +55,9 @@ data_parallel_size: 1
 # EP size for rollout
 expert_parallel_size: 1
 
+# When true, expert_parallel_size is derived as data_parallel_size * tensor_model_parallel_size
+enable_expert_parallel: false
+
 # PP size for rollout.
 pipeline_model_parallel_size: 1
 

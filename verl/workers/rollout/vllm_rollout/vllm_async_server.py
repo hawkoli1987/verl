@@ -321,7 +321,12 @@ class vLLMHttpServer:
             }
             args["speculative_config"] = speculative_config
 
-        if self.config.expert_parallel_size > 1:
+        # When enable_expert_parallel is True, EP follows DP*TP (may be set in RolloutConfig.__post_init__)
+        use_expert_parallel = (
+            self.config.expert_parallel_size > 1
+            or getattr(self.config, "enable_expert_parallel", False)
+        )
+        if use_expert_parallel:
             assert self.gpus_per_node % self.config.tensor_model_parallel_size == 0, (
                 "gpus_per_node should be divisible by tensor_model_parallel_size"
             )
@@ -333,7 +338,7 @@ class vLLMHttpServer:
 
             args.update(
                 {
-                    "enable_expert_parallel": self.config.expert_parallel_size > 1,
+                    "enable_expert_parallel": use_expert_parallel,
                     "data_parallel_size": self.config.data_parallel_size,
                     "data_parallel_size_local": data_parallel_size_local,
                     "data_parallel_start_rank": self.node_rank * data_parallel_size_local,
