@@ -223,20 +223,30 @@ class TorchMemoryProfiler:
         self.sampler = MemorySnapshotSampler()
 
         # Get parameters from tool_config, with fallback to defaults
+        # tool_config may be a dataclass, dict, or OmegaConf DictConfig
         if tool_config:
-            trace_alloc_max_entries = tool_config.trace_alloc_max_entries
-            stack_depth = tool_config.stack_depth
+            trace_alloc_max_entries = getattr(tool_config, "trace_alloc_max_entries", None)
+            stack_depth = getattr(tool_config, "stack_depth", None)
+            if trace_alloc_max_entries is None and hasattr(tool_config, "get"):
+                trace_alloc_max_entries = tool_config.get("trace_alloc_max_entries")
+            if stack_depth is None and hasattr(tool_config, "get"):
+                stack_depth = tool_config.get("stack_depth")
+            trace_alloc_max_entries = trace_alloc_max_entries if trace_alloc_max_entries is not None else 100_000
+            stack_depth = stack_depth if stack_depth is not None else 32
         else:
             trace_alloc_max_entries = 100_000
             stack_depth = 32
 
-        # Best-effort enable memory history once
+        # Best-effort enable memory history once (must run before vLLM/other large allocations)
         if not TorchMemoryProfiler._memory_history_enabled:
             try:
                 enable_memory_visualize(trace_alloc_max_entries=trace_alloc_max_entries, stack_depth=stack_depth)
-            except Exception:
-                # silently ignore if not supported
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"[TorchMemoryProfiler] enable_memory_visualize failed: {e}. "
+                    "Snapshots may lack allocation traces in the visualizer."
+                )
             TorchMemoryProfiler._memory_history_enabled = True
 
     def start(self, **kwargs):
