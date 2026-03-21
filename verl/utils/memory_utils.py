@@ -174,16 +174,20 @@ def enable_memory_visualize(
         record_context (bool): Whether to record context information for
             allocations. Required by older PyTorch versions.
     """
-    # Memory history recording is CUDA-specific functionality
-    if not is_cuda_available:
-        logger.warning("[memory_visualize] Memory history recording is only available on CUDA devices")
-        return
+    # Note: we intentionally skip the is_cuda_available guard here. In Ray workers inside
+    # containers, torch.cuda.is_available() may return False even when CUDA is accessible
+    # (CUDA_VISIBLE_DEVICES set but PyTorch runtime detection unreliable at import time).
+    # The actual _record_memory_history() call below is wrapped in try/except, so if CUDA
+    # is truly unavailable it will fail gracefully there.
 
     f = get_torch_device().memory._record_memory_history
     params = set(inspect.signature(f).parameters.keys())
 
     def _one_call(dev_kw=None):
         kwargs = {}
+        # PyTorch 2.11+ uses enabled="all" for full allocation history (required for visualizer traces)
+        if "enabled" in params:
+            kwargs["enabled"] = "all"
         if "context" in params:
             kwargs["context"] = context
         if "stacks" in params:
@@ -205,7 +209,8 @@ def enable_memory_visualize(
         try:
             f(**kwargs)
             return "native", kwargs
-        except TypeError:
+        except (TypeError, ValueError):
+            # Fallback for older PyTorch: enabled=True
             try:
                 if "trace_alloc_max_entries" in params and "record_context" in params:
                     f(enabled=True, trace_alloc_max_entries=trace_alloc_max_entries, record_context=True)
@@ -214,9 +219,12 @@ def enable_memory_visualize(
                         "trace_alloc_max_entries": trace_alloc_max_entries,
                         "record_context": True,
                     }
-                else:
+                elif "enabled" in params:
                     f(enabled=True)
                     return "legacy-min", {"enabled": True}
+                else:
+                    f()
+                    return "legacy-call", {}
             except Exception:
                 raise
 

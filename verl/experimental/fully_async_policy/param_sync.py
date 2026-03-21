@@ -16,6 +16,7 @@ import logging
 import time
 
 import ray
+from omegaconf import OmegaConf
 from ray.util.collective import collective
 
 from verl.utils.device import get_nccl_backend
@@ -126,6 +127,19 @@ class ParameterSynchronizer:
         self.mq_client.update_param_version_sync(version)
 
         pause_time = time.time()
+
+        # Dump rollout-side memory snapshot before sync (where OOM typically occurs)
+        profiler_enable = OmegaConf.select(self.config, "actor_rollout_ref.actor.profiler.enable", default=False)
+        profiler_tool = OmegaConf.select(self.config, "actor_rollout_ref.actor.profiler.tool") or OmegaConf.select(
+            self.config, "global_profiler.tool"
+        )
+        if profiler_enable and profiler_tool == "torch_memory":
+            sub_dir = f"pre_sync_step{global_steps}"
+            print(f"[ParameterSynchronizer] Dumping rollout memory snapshot before sync (sub_dir={sub_dir})")
+            self.rollout_wg.dump_memory_snapshot(
+                tag="pre_sync_rollout_weights",
+                sub_dir=sub_dir,
+            )
 
         # sync weights
         rollout_name = getattr(self.config.actor_rollout_ref.rollout, "name", None)

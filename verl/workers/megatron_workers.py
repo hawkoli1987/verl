@@ -552,6 +552,16 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
+        # Enable memory history before any GPU allocations (required for useful snapshots in visualizer)
+        if self._is_rollout and hasattr(self, "profiler") and getattr(self.profiler, "_impl", None) is not None:
+            if hasattr(self.profiler._impl, "sampler"):
+                try:
+                    from verl.utils.memory_utils import enable_memory_visualize
+
+                    enable_memory_visualize(trace_alloc_max_entries=100_000, stack_depth=32)
+                except Exception as e:
+                    logger.warning(f"[init_model] enable_memory_visualize failed: {e}")
+
         if self.config.model.get("external_lib", None) is not None:
             # This is used to import external_lib into the huggingface systems
             import importlib
@@ -975,7 +985,13 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             try:
                 # Try to use the profiler's memory snapshot functionality
                 if hasattr(self.profiler._impl, "sampler"):
-                    out_dir = OmegaConf.select(self.config, "actor.profiler.save_path") or "."
+                    out_dir = (
+                        OmegaConf.select(self.config, "actor.profiler.save_path")
+                        or OmegaConf.select(self.config, "rollout.profiler.save_path")
+                        or OmegaConf.select(self.config, "actor_rollout_ref.actor.profiler.save_path")
+                        or OmegaConf.select(self.config, "global_profiler.save_path")
+                        or "."
+                    )
                     self.profiler._impl.sampler.dump_memory_snapshot(out_dir=out_dir, tag=tag, sub_dir=sub_dir)
             except Exception as e:
                 # Log a warning if memory snapshot fails. This might be expected if the profiler doesn't support it.
