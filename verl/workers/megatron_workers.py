@@ -797,6 +797,11 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         micro_batch_size = self.config.actor.ppo_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
         dataloader = self.actor.make_minibatch_iterator(data=data)
+        # Flush PyTorch allocator cache before actor backward pass so that NCCL can
+        # allocate its ring-buffer (10 MiB) when the EP communicator is lazily
+        # initialized during the first backward.  Without this, the cache from ref
+        # log-prob computation fills GPU memory and leaves <10 MiB free for NCCL.
+        aggressive_empty_cache(force_sync=True)
         with Timer(name="update_policy", logger=None) as timer:
             metrics = self.actor.update_policy(dataloader=dataloader)
         delta_time = timer.last
