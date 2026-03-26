@@ -373,6 +373,17 @@ class vLLMHttpServer:
         if self.node_rank == 0:
             await self.run_server(server_args)
         else:
+            # TODO: avoid connect before master_sock close
+            await asyncio.sleep(3)
+            # Must set headless=True and api_server_count=0 before calling
+            # run_headless, otherwise api_server_count stays None and
+            # run_headless crashes with:
+            #   TypeError: '>' not supported between instances of 'NoneType' and 'int'
+            # Note: headless=True alone is insufficient — run_headless checks
+            # api_server_count directly; only ServeSubcommand.cmd() sets it
+            # from headless, but we call run_headless() directly here.
+            server_args.headless = True
+            server_args.api_server_count = 0  # headless = no API servers
             await self.run_headless(server_args)
 
     async def run_server(self, args: argparse.Namespace):
