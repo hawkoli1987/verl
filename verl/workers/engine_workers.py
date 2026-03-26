@@ -653,6 +653,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 0. send_weights only for async training with disaggregated trainer and rollout
         if self.config.rollout.checkpoint_engine.backend != "naive":
+            # Hybrid-engine path (below) toggles expandable_segments off/on around vLLM CUMem.
+            # In fully-async mode there is no vLLM on trainer nodes, so we just ensure
+            # expandable_segments is on for the actor backward pass (avoids fragmentation OOM).
+            set_expandable_segments(True)
             per_tensor_param, _ = self.actor.engine.get_per_tensor_param()
             await self.checkpoint_engine.send_weights(per_tensor_param)
             return
