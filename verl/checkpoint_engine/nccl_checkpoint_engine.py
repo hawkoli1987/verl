@@ -179,7 +179,9 @@ class NCCLCheckpointEngine(CheckpointEngine):
     def _start_zmq_server(self):
         self.ip = ray.util.get_node_ip_address().strip("[]")
         self.listen_port, _ = get_free_port(self.ip)
-        self.dist_port, _ = get_free_port(self.ip)
+        # Keep the reservation socket alive until init_process_group to prevent
+        # another process from grabbing the port between allocation and TCPStore bind.
+        self.dist_port, self._dist_port_sock = get_free_port(self.ip, with_alive_sock=True)
 
         context = zmq.Context()
         self.socket = context.socket(zmq.PUB)
@@ -218,14 +220,18 @@ class NCCLCheckpointEngine(CheckpointEngine):
             return
 
         if self.rebuild_group or self._pg is None:
-            store = dist.TCPStore(
+            # Release port reservation just before TCPStore binds to minimise race window.
+            if hasattr(self, "_dist_port_sock") and self._dist_port_sock is not None:
+                self._dist_port_sock.close()
+                self._dist_port_sock = None
+            self._store = dist.TCPStore(
                 host_name=master_metadata.zmq_ip,
                 port=master_metadata.dist_port,
                 world_size=world_size,
                 is_master=(rank == 0),
                 timeout=timedelta(seconds=300),
             )
-            self._pg = dist.ProcessGroupNCCL(store, rank, world_size)
+            self._pg = dist.ProcessGroupNCCL(self._store, rank, world_size)
             self.rank = rank
             self.world_size = world_size
         else:
