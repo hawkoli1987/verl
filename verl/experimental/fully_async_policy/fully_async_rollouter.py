@@ -229,6 +229,18 @@ class FullyAsyncRollouter(SeparateRayPPOTrainer):
         """Get rollout worker group"""
         return self.async_rollout_manager.rollout_replicas
 
+    async def pause_generation(self):
+        """Pause the rollouter so vLLM engines can drain before weight sync.
+
+        Sets self.paused = True, which causes _processor_worker to stop dispatching
+        new prompts and wait for active_tasks to complete. The caller should wait
+        for engines to drain, perform the weight sync, then call reset_staleness()
+        which resumes generation.
+        """
+        async with self.lock:
+            self.paused = True
+            print("[FullyAsyncRollouter][Public][pause_generation] paused for weight sync")
+
     def get_max_queue_size(self):
         return self.max_queue_size
 
