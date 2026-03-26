@@ -94,7 +94,10 @@ class BroadcastOperation:
             self.metadata = self.socket.recv_pyobj()
 
         # broadcast tensor via NCCL
-        dist.broadcast(self.bucket, src=0, group=self.pg)
+        opts = dist.BroadcastOptions()
+        opts.rootRank = 0
+        opts.rootTensor = 0
+        self.pg.broadcast([self.bucket], opts).wait()
 
     async def wait_for_complete(self) -> dict[str, TensorMeta]:
         """Wait for the broadcast operation to complete.
@@ -149,7 +152,7 @@ class NCCLCheckpointEngine(CheckpointEngine):
         """Destroy the NCCL process group if rebuild_group is True."""
         if self.rebuild_group:
             if self.rank >= 0 and self._pg is not None:
-                dist.destroy_process_group(self._pg)
+                self._pg.abort()
             self._pg = None
             self.rank = None
             self.world_size = None
@@ -233,7 +236,7 @@ class NCCLCheckpointEngine(CheckpointEngine):
 
         if self.rank > 0:
             self._connect_zmq_client(master_metadata)
-        dist.barrier(group=self._pg)
+        self._pg.barrier().wait()
 
         logger.info(f"init_process_group rank: {self.rank}, world_size: {self.world_size}")
 
