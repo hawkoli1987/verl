@@ -668,7 +668,7 @@ class RayWorkerGroup(WorkerGroup):
                 base_cache_dir = env_vars.get(cache_key) or os.environ.get(cache_key)
                 if not base_cache_dir:
                     continue
-                worker_cache_dir = os.path.join(base_cache_dir, cia_name, f"rank_{worker_key}")
+                worker_cache_dir = os.path.join(base_cache_dir, "_verl_isolation", cia_name, f"rank_{worker_key}")
                 os.makedirs(worker_cache_dir, exist_ok=True)
                 env_vars[cache_key] = worker_cache_dir
                 resolved_cache_env[cache_key] = worker_cache_dir

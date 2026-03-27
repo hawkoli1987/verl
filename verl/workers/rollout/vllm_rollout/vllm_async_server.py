@@ -955,7 +955,7 @@ class vLLMReplica(RolloutReplica):
                     base_cache_dir = os.environ.get(cache_key)
                     if not base_cache_dir:
                         continue
-                    server_cache_dir = os.path.join(base_cache_dir, "vllm_server", f"seed_{server_seed}")
+                    server_cache_dir = os.path.join(base_cache_dir, "_verl_isolation", "vllm_server", f"seed_{server_seed}")
                     os.makedirs(server_cache_dir, exist_ok=True)
                     server_env_vars[cache_key] = server_cache_dir
 
