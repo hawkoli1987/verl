@@ -930,22 +930,41 @@ class vLLMReplica(RolloutReplica):
                 name = f"{prefix}server_teacher_{self.replica_rank}_{node_rank}"
             else:
                 name = f"{prefix}server_{self.replica_rank}_{node_rank}"
+            server_env_vars = {
+                "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+                "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES": "1",
+                # To prevent hanging or crash during synchronization of weights between actor and rollout
+                # in disaggregated mode. See:
+                # https://docs.vllm.ai/en/latest/usage/troubleshooting.html?h=nccl_cumem_enable#known-issues
+                # https://github.com/vllm-project/vllm/blob/c6b0a7d3ba03ca414be1174e9bd86a97191b7090/vllm/worker/worker_base.py#L445
+                "NCCL_CUMEM_ENABLE": "0",
+            }
+            # Per-server cache isolation: unique subdirectory per vLLM server replica/node.
+            disable_cache_isolation = os.environ.get("VERL_DISABLE_WORKER_CACHE_ISOLATION", "0") == "1"
+            if disable_cache_isolation:
+                server_env_vars["VERL_DISABLE_WORKER_CACHE_ISOLATION"] = "1"
+            else:
+                server_seed = self.replica_rank * 1024 + node_rank
+                cache_env_keys = [
+                    "VLLM_CACHE_ROOT",
+                    "TORCHINDUCTOR_CACHE_DIR",
+                    "TRITON_CACHE_DIR",
+                    "XDG_CACHE_HOME",
+                ]
+                for cache_key in cache_env_keys:
+                    base_cache_dir = os.environ.get(cache_key)
+                    if not base_cache_dir:
+                        continue
+                    server_cache_dir = os.path.join(base_cache_dir, "vllm_server", f"seed_{server_seed}")
+                    os.makedirs(server_cache_dir, exist_ok=True)
+                    server_env_vars[cache_key] = server_cache_dir
+
             server = self.server_class.options(
                 scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                     node_id=node_id,
                     soft=False,
                 ),
-                runtime_env={
-                    "env_vars": {
-                        "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
-                        "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES": "1",
-                        # To prevent hanging or crash during synchronization of weights between actor and rollout
-                        # in disaggregated mode. See:
-                        # https://docs.vllm.ai/en/latest/usage/troubleshooting.html?h=nccl_cumem_enable#known-issues
-                        # https://github.com/vllm-project/vllm/blob/c6b0a7d3ba03ca414be1174e9bd86a97191b7090/vllm/worker/worker_base.py#L445
-                        "NCCL_CUMEM_ENABLE": "0",
-                    }
-                },
+                runtime_env={"env_vars": server_env_vars},
                 name=name,
                 max_concurrency=self.max_concurrency,
             ).remote(

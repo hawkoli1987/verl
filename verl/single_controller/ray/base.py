@@ -648,6 +648,49 @@ class RayWorkerGroup(WorkerGroup):
         cia_name = match.group(1) if match else cia_name  # "ActorClass(Obj)" -> "Obj"
         name = f"{self.name_prefix}{cia_name}_{pg_idx}:{local_rank}"  # e.g. Worker_2:5
 
+        # Per-rank cache isolation: append unique subdirectories to JIT cache paths
+        # so concurrent Ray workers don't race on the same Triton/TorchInductor files.
+        disable_cache_isolation = (
+            env_vars.get("VERL_DISABLE_WORKER_CACHE_ISOLATION")
+            or os.environ.get("VERL_DISABLE_WORKER_CACHE_ISOLATION", "0")
+        ) == "1"
+
+        if not disable_cache_isolation:
+            worker_key = pg_idx * 1024 + local_rank
+            cache_env_keys = [
+                "TORCHINDUCTOR_CACHE_DIR",
+                "TRITON_CACHE_DIR",
+                "XDG_CACHE_HOME",
+                "VLLM_CACHE_ROOT",
+            ]
+            resolved_cache_env = {}
+            for cache_key in cache_env_keys:
+                base_cache_dir = env_vars.get(cache_key) or os.environ.get(cache_key)
+                if not base_cache_dir:
+                    continue
+                worker_cache_dir = os.path.join(base_cache_dir, cia_name, f"rank_{worker_key}")
+                os.makedirs(worker_cache_dir, exist_ok=True)
+                env_vars[cache_key] = worker_cache_dir
+                resolved_cache_env[cache_key] = worker_cache_dir
+
+            if resolved_cache_env:
+                logging.warning(
+                    "Worker cache isolation: rank=%s pg_idx=%s local_rank=%s class=%s caches=%s",
+                    rank,
+                    pg_idx,
+                    local_rank,
+                    cia_name,
+                    resolved_cache_env,
+                )
+        else:
+            logging.warning(
+                "Worker cache isolation disabled: rank=%s pg_idx=%s local_rank=%s class=%s",
+                rank,
+                pg_idx,
+                local_rank,
+                cia_name,
+            )
+
         if self.profile_steps and self.device_name == "cuda":
             ray_cls_with_init.update_options(
                 {
