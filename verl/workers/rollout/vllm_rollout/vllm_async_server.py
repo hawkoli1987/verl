@@ -77,6 +77,32 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
 
 
+class _DpIsolatedTarget:
+    """Picklable wrapper that injects per-DP-engine cache subdirs at process start.
+
+    Used as the target_fn in CoreEngineProcManager so each DP engine process
+    appends /dp_{local_dp_rank} to its cache env vars before any JIT compilation.
+
+    Must be a module-level class (not a closure) for pickle compatibility with
+    multiprocessing 'spawn' context (which vLLM uses on this platform).
+    """
+
+    _CACHE_KEYS = ["TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR", "VLLM_CACHE_ROOT", "XDG_CACHE_HOME"]
+
+    def __init__(self, original_target):
+        self._original_target = original_target
+
+    def __call__(self, *args, local_dp_rank: int = 0, **kwargs):
+        import os as _os
+        for _key in self._CACHE_KEYS:
+            _base = _os.environ.get(_key)
+            if _base:
+                _dp_dir = _os.path.join(_base, f"dp_{local_dp_rank}")
+                _os.makedirs(_dp_dir, exist_ok=True)
+                _os.environ[_key] = _dp_dir
+        return self._original_target(*args, local_dp_rank=local_dp_rank, **kwargs)
+
+
 def _patch_vllm_dp_engine_cache_isolation():
     """Monkey-patch CoreEngineProcManager to give each DP engine its own cache subdir.
 
@@ -86,10 +112,10 @@ def _patch_vllm_dp_engine_cache_isolation():
     inheriting the same seed_N dir — causing Triton/TorchInductor file races on
     shared FS (concurrent writes to .json/.ttir/.cubin files).
 
-    This patch wraps target_fn passed to CoreEngineProcManager.__init__ so that
-    each DP engine process appends /dp_{local_dp_rank} to all cache env vars at
-    process start, before any JIT compilation.  With Linux 'fork' semantics the
-    forked child inherits the wrapped closure in memory.
+    This patch wraps target_fn passed to CoreEngineProcManager.__init__ with a
+    _DpIsolatedTarget instance (picklable for 'spawn' context) so that each DP
+    engine process appends /dp_{local_dp_rank} to all cache env vars at process
+    start, before any JIT compilation.
 
     Skipped when VERL_DISABLE_WORKER_CACHE_ISOLATION=1.
     """
@@ -99,23 +125,9 @@ def _patch_vllm_dp_engine_cache_isolation():
         return  # vLLM v0 or different layout — skip
 
     _orig_init = _CoreEngineProcManager.__init__
-    _cache_keys = ["TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR", "VLLM_CACHE_ROOT", "XDG_CACHE_HOME"]
 
     def _patched_init(self, target_fn, *args, **kwargs):
-        _original_target = target_fn
-
-        def _dp_isolated_target(*targs, local_dp_rank: int = 0, **tkwargs):
-            # Runs inside the forked DP engine process.  Set per-engine cache dirs
-            # before any triton/inductor compilation occurs.
-            for _key in _cache_keys:
-                _base = os.environ.get(_key)
-                if _base:
-                    _dp_dir = os.path.join(_base, f"dp_{local_dp_rank}")
-                    os.makedirs(_dp_dir, exist_ok=True)
-                    os.environ[_key] = _dp_dir
-            return _original_target(*targs, local_dp_rank=local_dp_rank, **tkwargs)
-
-        _orig_init(self, _dp_isolated_target, *args, **kwargs)
+        _orig_init(self, _DpIsolatedTarget(target_fn), *args, **kwargs)
 
     _CoreEngineProcManager.__init__ = _patched_init
 
