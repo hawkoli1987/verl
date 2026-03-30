@@ -550,11 +550,6 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         if self.local_trigger_step != 1:
             return
 
-        # Pause the rollouter before weight sync so vLLM engines can drain.
-        # Without this, the rollouter keeps feeding prompts and engines never idle,
-        # causing wait_for_requests_to_drain to timeout.
-        ray.get(self.rollouter.pause_generation.remote())
-
         with marked_timer("timing_s/param_sync", self.timing_raw):
             await self.checkpoint_manager.update_weights(global_steps=self.current_param_version)
         print(
