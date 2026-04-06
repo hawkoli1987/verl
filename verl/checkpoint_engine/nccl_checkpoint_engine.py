@@ -224,13 +224,35 @@ class NCCLCheckpointEngine(CheckpointEngine):
             if hasattr(self, "_dist_port_sock") and self._dist_port_sock is not None:
                 self._dist_port_sock.close()
                 self._dist_port_sock = None
-            self._store = dist.TCPStore(
-                host_name=master_metadata.zmq_ip,
-                port=master_metadata.dist_port,
-                world_size=world_size,
-                is_master=(rank == 0),
-                timeout=timedelta(seconds=300),
-            )
+            _tcpstore_retries = 5
+            _tcpstore_retry_delay = 0.5
+            _tcpstore_last_exc = None
+            for _tcpstore_attempt in range(_tcpstore_retries):
+                try:
+                    self._store = dist.TCPStore(
+                        host_name=master_metadata.zmq_ip,
+                        port=master_metadata.dist_port,
+                        world_size=world_size,
+                        is_master=(rank == 0),
+                        timeout=timedelta(seconds=300),
+                    )
+                    break
+                except Exception as _e:
+                    if rank == 0 and "address already in use" in str(_e).lower():
+                        _tcpstore_last_exc = _e
+                        logger.warning(
+                            "TCPStore port %d already in use (TOCTOU race), "
+                            "retrying in %.1fs (attempt %d/%d)...",
+                            master_metadata.dist_port,
+                            _tcpstore_retry_delay,
+                            _tcpstore_attempt + 1,
+                            _tcpstore_retries,
+                        )
+                        time.sleep(_tcpstore_retry_delay)
+                    else:
+                        raise
+            else:
+                raise _tcpstore_last_exc
             self._pg = dist.ProcessGroupNCCL(self._store, rank, world_size)
             self.rank = rank
             self.world_size = world_size
