@@ -267,7 +267,7 @@ class vLLMColocateWorkerExtension:
         """Get ZMQ handle for communication."""
         if not hasattr(self, "device_uuid") or not self.device_uuid:
             self.device_uuid = get_device_uuid(self.device.index)
-        return f"ipc:///tmp/rl-colocate-zmq-{self.device_uuid}.sock"
+        return f"ipc:///tmp/rl-colocate-zmq-{os.getuid()}-{self.device_uuid}.sock"
 
 
 class vLLMOmniColocateWorkerExtension(_OmniWorkerBase):
@@ -333,7 +333,7 @@ class vLLMOmniColocateWorkerExtension(_OmniWorkerBase):
         """Get ZMQ handle for communication."""
         if not hasattr(self, "device_uuid") or not self.device_uuid:
             self.device_uuid = get_device_uuid(self.device.index)
-        return f"ipc:///tmp/rl-colocate-zmq-{self.device_uuid}.sock"
+        return f"ipc:///tmp/rl-colocate-zmq-{os.getuid()}-{self.device_uuid}.sock"
 
 
 class SuppressSignalInThread:

@@ -159,8 +159,11 @@ class BucketedWeightSender:
         if self.zmq_handle.startswith("ipc://"):
             sock_path = self.zmq_handle[len("ipc://"):]
             if os.path.exists(sock_path):
-                logger.warning("Removing stale IPC socket file: %s", sock_path)
-                os.unlink(sock_path)
+                try:
+                    os.unlink(sock_path)
+                    logger.warning("Removed stale IPC socket file: %s", sock_path)
+                except PermissionError:
+                    logger.warning("Cannot remove stale IPC socket file (owned by another user): %s", sock_path)
         self.socket = self.zmq_context.socket(zmq.REQ)
         self.socket.bind(self.zmq_handle)
 
